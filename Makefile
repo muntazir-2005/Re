@@ -6,7 +6,7 @@ INSTALL_TARGET_PROCESSES = YourGameExecutable
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ANOGS
-ANOGS_FILES = Tweak.x
+ANOGS_FILES = Tweak.x fishhook.c
 ANOGS_FRAMEWORKS = UIKit Security
 ANOGS_CFLAGS = -fobjc-arc -I.
 
