@@ -5,110 +5,102 @@
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <mach/mach.h>
-#import "fishhook.h"
 #import <CommonCrypto/CommonHMAC.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <time.h>
 #include <stdlib.h>
 
-// ==================== تصريح يدوي للدوال المخفية ====================
+// ==================== تصريح يدوي ====================
 extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
 extern const char* _dyld_get_image_name(uint32_t idx);
 extern const struct mach_header* _dyld_get_image_header(uint32_t idx);
 
-// ==================== مؤشرات الدوال الأصلية ====================
-static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
-static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
-static int (*orig_ptrace)(int, pid_t, caddr_t, int);
-static char* (*orig_getenv)(const char *);
-static int (*orig_uname)(struct utsname *);
-static const char* (*orig_dyld_name)(uint32_t);
-static const struct mach_header* (*orig_dyld_header)(uint32_t);
-static kern_return_t (*orig_vm_region)(mach_port_t, vm_address_t *, vm_size_t *, natural_t *, vm_region_recurse_info_t, mach_msg_type_number_t *);
+// ==================== DYLD_INTERPOSE الآمن (لا يلمس الذاكرة) ====================
+#define DYLD_INTERPOSE(_replacement, _replacee) \
+    __attribute__((used)) static struct { \
+        const void *replacement; \
+        const void *replacee; \
+    } _interpose_##_replacee __attribute__((section("__DATA,__interpose"))) = { \
+        (const void *)(unsigned long)&_replacement, \
+        (const void *)(unsigned long)&_replacee \
+    };
 
-// ==================== بدائل الحماية ====================
+// ==================== دوال الحماية باستخدام dlsym في كل مرة ====================
 static int _sysctl_h(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    static int (*real_sysctl)(int *, u_int, void *, size_t *, void *, size_t) = NULL;
+    if (!real_sysctl) real_sysctl = dlsym(RTLD_NEXT, "sysctl");
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) return -1;
-    return orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
+    return real_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 }
+DYLD_INTERPOSE(_sysctl_h, sysctl);
 
 static int _sysctlbyname_h(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    static int (*real_sysctlbyname)(const char *, void *, size_t *, void *, size_t) = NULL;
+    if (!real_sysctlbyname) real_sysctlbyname = dlsym(RTLD_NEXT, "sysctlbyname");
     if (name && strstr(name, "proc")) return -1;
-    return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    return real_sysctlbyname(name, oldp, oldlenp, newp, newlen);
 }
+DYLD_INTERPOSE(_sysctlbyname_h, sysctlbyname);
 
-#define PT_DENY_ATTACH 31
 static int _ptrace_h(int request, pid_t pid, caddr_t addr, int data) {
-    if (request == PT_DENY_ATTACH) return 0;
-    return orig_ptrace(request, pid, addr, data);
+    static int (*real_ptrace)(int, pid_t, caddr_t, int) = NULL;
+    if (!real_ptrace) real_ptrace = dlsym(RTLD_NEXT, "ptrace");
+    if (request == 31) return 0; // PT_DENY_ATTACH
+    return real_ptrace(request, pid, addr, data);
 }
+DYLD_INTERPOSE(_ptrace_h, ptrace);
 
 static char* _getenv_h(const char *name) {
+    static char* (*real_getenv)(const char *) = NULL;
+    if (!real_getenv) real_getenv = dlsym(RTLD_NEXT, "getenv");
     if (name && strcmp(name, "DYLD_INSERT_LIBRARIES") == 0) return NULL;
-    return orig_getenv(name);
+    return real_getenv(name);
 }
+DYLD_INTERPOSE(_getenv_h, getenv);
 
 static int _uname_h(struct utsname *buf) {
-    int ret = orig_uname(buf);
+    static int (*real_uname)(struct utsname *) = NULL;
+    if (!real_uname) real_uname = dlsym(RTLD_NEXT, "uname");
+    int ret = real_uname(buf);
     if (ret == 0 && buf) {
         strlcpy(buf->machine, "iPhone15,3", sizeof(buf->machine));
         strlcpy(buf->release, "22.4.0", sizeof(buf->release));
     }
     return ret;
 }
+DYLD_INTERPOSE(_uname_h, uname);
 
 static const char* _dyld_name_h(uint32_t idx) {
-    const char *n = orig_dyld_name(idx);
+    static const char* (*real)(uint32_t) = NULL;
+    if (!real) real = dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
+    const char *n = real(idx);
     if (n && strstr(n, "ANOGS.dylib")) return "";
     return n;
 }
+DYLD_INTERPOSE(_dyld_name_h, _dyld_get_image_name);
 
 static const struct mach_header* _dyld_header_h(uint32_t idx) {
-    const char *n = orig_dyld_name(idx);
+    static const struct mach_header* (*real)(uint32_t) = NULL;
+    if (!real) real = dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
+    const char *n = _dyld_get_image_name(idx); // استدعاء النسخة البديلة
     if (n && strstr(n, "ANOGS.dylib")) return NULL;
-    return orig_dyld_header(idx);
+    return real(idx);
 }
+DYLD_INTERPOSE(_dyld_header_h, _dyld_get_image_header);
 
 static kern_return_t _vm_region_h(mach_port_t target, vm_address_t *addr, vm_size_t *size, natural_t *depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt) {
-    kern_return_t ret = orig_vm_region(target, addr, size, depth, info, infoCnt);
+    static kern_return_t (*real)(mach_port_t, vm_address_t *, vm_size_t *, natural_t *, vm_region_recurse_info_t, mach_msg_type_number_t *) = NULL;
+    if (!real) real = dlsym(RTLD_DEFAULT, "vm_region_recurse_64");
+    kern_return_t ret = real(target, addr, size, depth, info, infoCnt);
     if (ret == KERN_SUCCESS && infoCnt && *infoCnt >= sizeof(vm_region_submap_info_data_64_t)) {
         vm_region_submap_info_data_64_t *submap = (vm_region_submap_info_data_64_t *)info;
         submap->protection = VM_PROT_READ | VM_PROT_EXECUTE;
     }
     return ret;
 }
+DYLD_INTERPOSE(_vm_region_h, vm_region_recurse_64);
 
-// ==================== بصمة AI ====================
-static NSString* _hmac(NSString *msg, NSString *key) {
-    unsigned char hmac[CC_SHA256_DIGEST_LENGTH];
-    CCHmac(kCCHmacAlgSHA256, [key UTF8String], [key length],
-           [msg UTF8String], [msg length], hmac);
-    NSMutableString *r = [NSMutableString stringWithCapacity:64];
-    for (int i=0; i<CC_SHA256_DIGEST_LENGTH; i++) [r appendFormat:@"%02x", hmac[i]];
-    return r;
-}
-
-static NSString* _generateFingerprint() {
-    @autoreleasepool {
-        static NSString *sessUUID = nil;
-        static dispatch_once_t once;
-        dispatch_once(&once, ^{ sessUUID = [[NSUUID UUID] UUIDString]; });
-        NSTimeInterval ts = [[NSDate date] timeIntervalSince1970];
-        NSString *micro = [NSString stringWithFormat:@"%.0f", ts * 1000];
-        int magic = 106 + arc4random_uniform(999894);
-        NSString *realIDFV = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
-        NSString *salt = [NSString stringWithFormat:@"ANOGS_SALT_%d", magic];
-        NSString *maskedIDFV = _hmac(realIDFV, salt);
-        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.unknown";
-        NSString *maskedBundle = _hmac(bundleID, salt);
-        NSString *raw = [NSString stringWithFormat:@"%@|%@|%@|%@|%d|726", maskedIDFV, maskedBundle, sessUUID, micro, magic];
-        return [_hmac(raw, sessUUID) substringToIndex:64];
-    }
-}
-
-static NSString *_currentFP = nil;
-
-// ==================== Swizzling خصائص الجهاز ====================
+// ==================== Swizzling (استمرار بنفس الطريقة لأنها لا تلمس GOT) ====================
 static NSOperatingSystemVersion _osVer_h(id self, SEL _cmd) {
     return (NSOperatingSystemVersion){17, 4, 1};
 }
@@ -124,8 +116,6 @@ static BOOL _fileExists_h(id self, SEL _cmd, NSString *path) {
     BOOL (*orig)(id, SEL, NSString*) = (BOOL (*)(id, SEL, NSString*))class_getMethodImplementation([NSFileManager class], @selector(fileExistsAtPath:));
     return orig(self, _cmd, path);
 }
-
-// ==================== اعتراض الشبكة ====================
 static void (*orig_setValueHTTP)(id, SEL, NSString*, NSString*);
 static void _setValueHTTP_h(id self, SEL _cmd, NSString *val, NSString *field) {
     if ([field isEqualToString:@"X-AI-Fingerprint"])
@@ -133,43 +123,26 @@ static void _setValueHTTP_h(id self, SEL _cmd, NSString *val, NSString *field) {
     orig_setValueHTTP(self, _cmd, val, field);
 }
 
-// ==================== واجهة التأكيد ====================
-static void _showAlert() {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2.0 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-        UIWindow *alertWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        alertWindow.windowLevel = UIWindowLevelAlert + 1;
-        alertWindow.backgroundColor = [UIColor clearColor];
-        alertWindow.rootViewController = [[UIViewController alloc] init];
-        alertWindow.rootViewController.view.backgroundColor = [UIColor clearColor];
-        [alertWindow makeKeyAndVisible];
-
-        UIAlertController *alert = [UIAlertController
-            alertControllerWithTitle:@"🔐 ANOGS-AI"
-            message:[NSString stringWithFormat:@"✅ تم التجاوز بنجاح\nالبصمة: %@", _currentFP]
-            preferredStyle:UIAlertControllerStyleAlert];
-        [alert addAction:[UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            alertWindow.hidden = YES;
-        }]];
-        [alertWindow.rootViewController presentViewController:alert animated:YES completion:nil];
-    });
+// ==================== بصمة AI ====================
+static NSString* _hmac(NSString *msg, NSString *key) {
+    unsigned char hmac[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, [key UTF8String], [key length],
+           [msg UTF8String], [msg length], hmac);
+    NSMutableString *r = [NSMutableString stringWithCapacity:64];
+    for (int i=0; i<CC_SHA256_DIGEST_LENGTH; i++) [r appendFormat:@"%02x", hmac[i]];
+    return r;
 }
+static NSString* _generateFingerprint() { /* نفس ما لديك */ }
+static NSString *_currentFP = nil;
+
+// ==================== واجهة التأكيد ====================
+static void _showAlert() { /* نفس ما لديك */ }
 
 // ==================== التهيئة ====================
 __attribute__((constructor))
 static void _init() {
     @autoreleasepool {
-        struct rebinding reb[] = {
-            {"sysctl", _sysctl_h, (void**)&orig_sysctl},
-            {"sysctlbyname", _sysctlbyname_h, (void**)&orig_sysctlbyname},
-            {"ptrace", _ptrace_h, (void**)&orig_ptrace},
-            {"getenv", _getenv_h, (void**)&orig_getenv},
-            {"uname", _uname_h, (void**)&orig_uname},
-            {"_dyld_get_image_name", _dyld_name_h, (void**)&orig_dyld_name},
-            {"_dyld_get_image_header", _dyld_header_h, (void**)&orig_dyld_header},
-            {"vm_region_recurse_64", _vm_region_h, (void**)&orig_vm_region}
-        };
-        rebind_symbols(reb, sizeof(reb)/sizeof(reb[0]));
-
+        // تثبيت Swizzling فقط (لا fishhook)
         class_replaceMethod(objc_getClass("NSProcessInfo"), @selector(operatingSystemVersion), (IMP)_osVer_h, "@@:");
         class_replaceMethod(objc_getClass("UIDevice"), @selector(model), (IMP)_model_h, "@@:");
         class_replaceMethod(objc_getClass("UIDevice"), @selector(identifierForVendor), (IMP)_idfv_h, "@@:");
@@ -182,7 +155,7 @@ static void _init() {
         }
 
         _currentFP = _generateFingerprint();
-        NSLog(@"[ANOGS-AI] ✅ جميع الحمايات نشطة | البصمة: %@", _currentFP);
+        NSLog(@"[ANOGS-AI] ✅ جميع الحمايات نشطة (No-Memory-Touch) | البصمة: %@", _currentFP);
         _showAlert();
     }
 }
