@@ -15,7 +15,7 @@ extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
 extern const char* _dyld_get_image_name(uint32_t idx);
 extern const struct mach_header* _dyld_get_image_header(uint32_t idx);
 
-// ==================== DYLD_INTERPOSE الآمن (لا يلمس الذاكرة) ====================
+// ==================== DYLD_INTERPOSE ====================
 #define DYLD_INTERPOSE(_replacement, _replacee) \
     __attribute__((used)) static struct { \
         const void *replacement; \
@@ -25,7 +25,11 @@ extern const struct mach_header* _dyld_get_image_header(uint32_t idx);
         (const void *)(unsigned long)&_replacee \
     };
 
-// ==================== دوال الحماية باستخدام dlsym في كل مرة ====================
+// ==================== إعلان المتغيرات العامة (قبل الدوال) ====================
+static NSString *_currentFP = nil;
+static void (*orig_setValueHTTP)(id, SEL, NSString*, NSString*);
+
+// ==================== دوال الحماية باستخدام dlsym ====================
 static int _sysctl_h(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     static int (*real_sysctl)(int *, u_int, void *, size_t *, void *, size_t) = NULL;
     if (!real_sysctl) real_sysctl = dlsym(RTLD_NEXT, "sysctl");
@@ -45,7 +49,7 @@ DYLD_INTERPOSE(_sysctlbyname_h, sysctlbyname);
 static int _ptrace_h(int request, pid_t pid, caddr_t addr, int data) {
     static int (*real_ptrace)(int, pid_t, caddr_t, int) = NULL;
     if (!real_ptrace) real_ptrace = dlsym(RTLD_NEXT, "ptrace");
-    if (request == 31) return 0; // PT_DENY_ATTACH
+    if (request == 31) return 0;
     return real_ptrace(request, pid, addr, data);
 }
 DYLD_INTERPOSE(_ptrace_h, ptrace);
@@ -82,7 +86,7 @@ DYLD_INTERPOSE(_dyld_name_h, _dyld_get_image_name);
 static const struct mach_header* _dyld_header_h(uint32_t idx) {
     static const struct mach_header* (*real)(uint32_t) = NULL;
     if (!real) real = dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
-    const char *n = _dyld_get_image_name(idx); // استدعاء النسخة البديلة
+    const char *n = _dyld_get_image_name(idx);
     if (n && strstr(n, "ANOGS.dylib")) return NULL;
     return real(idx);
 }
@@ -100,7 +104,7 @@ static kern_return_t _vm_region_h(mach_port_t target, vm_address_t *addr, vm_siz
 }
 DYLD_INTERPOSE(_vm_region_h, vm_region_recurse_64);
 
-// ==================== Swizzling (استمرار بنفس الطريقة لأنها لا تلمس GOT) ====================
+// ==================== Swizzling ====================
 static NSOperatingSystemVersion _osVer_h(id self, SEL _cmd) {
     return (NSOperatingSystemVersion){17, 4, 1};
 }
@@ -116,7 +120,8 @@ static BOOL _fileExists_h(id self, SEL _cmd, NSString *path) {
     BOOL (*orig)(id, SEL, NSString*) = (BOOL (*)(id, SEL, NSString*))class_getMethodImplementation([NSFileManager class], @selector(fileExistsAtPath:));
     return orig(self, _cmd, path);
 }
-static void (*orig_setValueHTTP)(id, SEL, NSString*, NSString*);
+
+// ==================== اعتراض الشبكة (تستخدم _currentFP الذي أُعلن أعلاه) ====================
 static void _setValueHTTP_h(id self, SEL _cmd, NSString *val, NSString *field) {
     if ([field isEqualToString:@"X-AI-Fingerprint"])
         val = _currentFP;
@@ -132,11 +137,45 @@ static NSString* _hmac(NSString *msg, NSString *key) {
     for (int i=0; i<CC_SHA256_DIGEST_LENGTH; i++) [r appendFormat:@"%02x", hmac[i]];
     return r;
 }
-static NSString* _generateFingerprint() { /* نفس ما لديك */ }
-static NSString *_currentFP = nil;
+
+static NSString* _generateFingerprint() {
+    @autoreleasepool {
+        static NSString *sessUUID = nil;
+        static dispatch_once_t once;
+        dispatch_once(&once, ^{ sessUUID = [[NSUUID UUID] UUIDString]; });
+        NSTimeInterval ts = [[NSDate date] timeIntervalSince1970];
+        NSString *micro = [NSString stringWithFormat:@"%.0f", ts * 1000];
+        int magic = 106 + arc4random_uniform(999894);
+        NSString *realIDFV = [[[UIDevice currentDevice] identifierForVendor] UUIDString];
+        NSString *salt = [NSString stringWithFormat:@"ANOGS_SALT_%d", magic];
+        NSString *maskedIDFV = _hmac(realIDFV, salt);
+        NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier] ?: @"com.unknown";
+        NSString *maskedBundle = _hmac(bundleID, salt);
+        NSString *raw = [NSString stringWithFormat:@"%@|%@|%@|%@|%d|726", maskedIDFV, maskedBundle, sessUUID, micro, magic];
+        return [_hmac(raw, sessUUID) substringToIndex:64];
+    }
+}
 
 // ==================== واجهة التأكيد ====================
-static void _showAlert() { /* نفس ما لديك */ }
+static void _showAlert() {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2.0 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
+        UIWindow *alertWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+        alertWindow.windowLevel = UIWindowLevelAlert + 1;
+        alertWindow.backgroundColor = [UIColor clearColor];
+        alertWindow.rootViewController = [[UIViewController alloc] init];
+        alertWindow.rootViewController.view.backgroundColor = [UIColor clearColor];
+        [alertWindow makeKeyAndVisible];
+
+        UIAlertController *alert = [UIAlertController
+            alertControllerWithTitle:@"🔐 ANOGS-AI"
+            message:[NSString stringWithFormat:@"✅ تم التجاوز بنجاح\nالبصمة: %@", _currentFP]
+            preferredStyle:UIAlertControllerStyleAlert];
+        [alert addAction:[UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
+            alertWindow.hidden = YES;
+        }]];
+        [alertWindow.rootViewController presentViewController:alert animated:YES completion:nil];
+    });
+}
 
 // ==================== التهيئة ====================
 __attribute__((constructor))
@@ -155,7 +194,7 @@ static void _init() {
         }
 
         _currentFP = _generateFingerprint();
-        NSLog(@"[ANOGS-AI] ✅ جميع الحمايات نشطة (No-Memory-Touch) | البصمة: %@", _currentFP);
+        NSLog(@"[ANOGS-AI] ✅ جميع الحمايات نشطة | البصمة: %@", _currentFP);
         _showAlert();
     }
 }
