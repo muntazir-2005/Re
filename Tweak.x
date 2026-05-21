@@ -215,35 +215,42 @@ static void ultimateInit() {
         DBG(@"✅ All protections active | Fingerprint: %@", currentFingerprint);
 
         // ============================================================
-        // واجهة رسومية: "تمت الإضافة بنجاح" عند تشغيل التطبيق
-        // ============================================================
-        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
-                                                          object:nil
-                                                           queue:[NSOperationQueue mainQueue]
-                                                      usingBlock:^(NSNotification *note) {
-            static dispatch_once_t onceToken;
-            dispatch_once(&onceToken, ^{
-                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-                    UIAlertController *alert = [UIAlertController
-                        alertControllerWithTitle:@"🔐 Bypass"
-                        message:[NSString stringWithFormat:@"✅ تمت الإضافة بنجاح\nالبصمة: %@", currentFingerprint ?: @"غير متاحة"]
-                        preferredStyle:UIAlertControllerStyleAlert];
-                    
-                    UIAlertAction *ok = [UIAlertAction actionWithTitle:@"موافق"
-                                                                 style:UIAlertActionStyleDefault
-                                                               handler:nil];
-                    [alert addAction:ok];
-                    
-                    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+// واجهة رسومية: "تمت الإضافة بنجاح" عند تشغيل التطبيق
+// ============================================================
+[[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                  object:nil
+                                                   queue:[NSOperationQueue mainQueue]
+                                              usingBlock:^(NSNotification *note) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIAlertController *alert = [UIAlertController
+                alertControllerWithTitle:@"🔐 Bypass"
+                message:[NSString stringWithFormat:@"✅ تمت الإضافة بنجاح\nالبصمة: %@", currentFingerprint ?: @"غير متاحة"]
+                preferredStyle:UIAlertControllerStyleAlert];
+            
+            UIAlertAction *ok = [UIAlertAction actionWithTitle:@"موافق"
+                                                         style:UIAlertActionStyleDefault
+                                                       handler:nil];
+            [alert addAction:ok];
+            
+            // --- الكود الحديث للحصول على keyWindow ---
+            UIWindow *keyWindow = nil;
+            for (UIScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]] &&
+                    scene.activationState == UISceneActivationStateForegroundActive) {
+                    UIWindowScene *windowScene = (UIWindowScene *)scene;
+                    keyWindow = windowScene.keyWindow;
                     if (!keyWindow) {
-                        keyWindow = [UIApplication sharedApplication].windows.firstObject;
+                        keyWindow = windowScene.windows.firstObject;
                     }
-                    
-                    if (keyWindow && keyWindow.rootViewController) {
-                        [keyWindow.rootViewController presentViewController:alert animated:YES completion:nil];
-                    }
-                });
-            });
-        }];
-    }
-}
+                    break;
+                }
+            }
+            
+            if (keyWindow && keyWindow.rootViewController) {
+                [keyWindow.rootViewController presentViewController:alert animated:YES completion:nil];
+            }
+        });
+    });
+}];
