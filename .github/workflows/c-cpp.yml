@@ -43,51 +43,35 @@ jobs:
           ls -la $THEOS/sdks/
 
       - name: Clone and build Titanox (patched)
-        run: |
-          set -e
-          export THEOS=/opt/theos
-          cd /tmp
-          git clone https://github.com/Ragekill3377/Titanox.git --depth=1
-          cd Titanox/libtitanox
+  run: |
+    set -e
+    export THEOS=/opt/theos
+    cd /tmp
+    git clone https://github.com/Ragekill3377/Titanox.git --depth=1
+    cd Titanox/libtitanox
 
-          sed -i '' 's|THEOS = /home/rage/theos|THEOS = /opt/theos|g' Makefile
-          sed -i '' 's|SYSROOT = $(THEOS)/sdks/iPhoneOS13.7.sdk|SYSROOT = $(THEOS)/sdks/iPhoneOS18.6.sdk|g' Makefile
-          sed -i '' 's|cp /home/rage/theos/lib/libtitanox.dylib|cp $(THEOS)/lib/libtitanox.dylib|g' Makefile
+    # Add missing pthread.h include
+    if ! grep -q '#include <pthread.h>' utils/utils.mm; then
+      sed -i '' '1i\
+#include <pthread.h>\
+' utils/utils.mm
+    fi
 
-          echo "===== Patched Makefile ====="
-          head -10 Makefile
+    sed -i '' 's|THEOS = /home/rage/theos|THEOS = /opt/theos|g' Makefile
+    sed -i '' 's|SYSROOT = $(THEOS)/sdks/iPhoneOS13.7.sdk|SYSROOT = $(THEOS)/sdks/iPhoneOS18.6.sdk|g' Makefile
+    sed -i '' 's|cp /home/rage/theos/lib/libtitanox.dylib|cp $(THEOS)/lib/libtitanox.dylib|g' Makefile
 
-          make THEOS=$THEOS
+    echo "===== Patched Makefile ====="
+    head -10 Makefile
 
-          # Copy output to Theos with proper permissions
-          sudo mkdir -p $THEOS/lib $THEOS/include
-          sudo cp libtitanox.dylib $THEOS/lib/
-          sudo cp Titanox.h $THEOS/include/
+    make THEOS=$THEOS
 
-      - name: Build tweak (ANOGS)
-        run: |
-          set -e
-          export THEOS=/opt/theos
-          export PATH=$THEOS/bin:$PATH
-          make package FINALPACKAGE=1
+    # Copy output to Theos with proper permissions
+    sudo mkdir -p $THEOS/lib $THEOS/include
+    sudo cp libtitanox.dylib $THEOS/lib/
+    sudo cp Titanox.h $THEOS/include/
 
-      - name: Prepare artifacts
-        run: |
-          set -e
-          mkdir -p output
-          if ls packages/*.deb 1> /dev/null 2>&1; then
-            cp packages/*.deb output/
-            DEB_FILE=$(ls packages/*.deb | head -1)
-            mkdir -p deb_extract
-            dpkg-deb -x "$DEB_FILE" deb_extract
-            find deb_extract -name "*.dylib" -exec cp {} output/ANOGS.dylib \;
-            rm -rf deb_extract
-          else
-            echo "Warning: No .deb files found in packages directory"
-            ls -la packages/ || echo "packages/ directory not found"
-          fi
-          ls -la output/
-
+    
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
