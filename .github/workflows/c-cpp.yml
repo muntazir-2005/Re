@@ -1,4 +1,4 @@
-name: ANOGS + Titanox CI
+name: ANOGS + Titanox CI (Fixed SDK)
 
 on:
   push:
@@ -23,16 +23,38 @@ jobs:
           sudo chown -R $USER:staff $THEOS
           git clone --recursive https://github.com/theos/theos.git $THEOS --depth=1
 
-      - name: Clone and build Titanox
+      - name: Install iOS SDKs
+        run: |
+          export THEOS=/opt/theos
+          cd /tmp
+          git clone https://github.com/Tonwalter888/iOS-SDKs.git --depth=1
+          cp -r iPhoneOS16.5.sdk $THEOS/sdks/
+          cp -r iPhoneOS17.5.sdk $THEOS/sdks/
+          cp -r iPhoneOS18.6.sdk $THEOS/sdks/
+          ls -la $THEOS/sdks/
+
+      - name: Clone and build Titanox (patched)
         run: |
           export THEOS=/opt/theos
           cd /tmp
           git clone https://github.com/Ragekill3377/Titanox.git --depth=1
           cd Titanox/libtitanox
-          # تجاوز مسار THEOS الداخلي في Titanox
-          sed -i '' 's|/home/rage/theos|$(THEOS)|g' Makefile
+
+          # إصلاح Makefile: استبدال المسار الثابت بـ THEOS
+          sed -i '' 's|THEOS = /home/rage/theos|THEOS = /opt/theos|g' Makefile
+
+          # استبدال SDK القديم بأحدث SDK متوفر
+          sed -i '' 's|SYSROOT = $(THEOS)/sdks/iPhoneOS13.7.sdk|SYSROOT = $(THEOS)/sdks/iPhoneOS18.6.sdk|g' Makefile
+
+          # إصلاح مسار النسخ في after-package
+          sed -i '' 's|cp /home/rage/theos/lib/libtitanox.dylib|cp $(THEOS)/lib/libtitanox.dylib|g' Makefile
+
+          echo "===== Patched Makefile ====="
+          head -10 Makefile
+
           make THEOS=$THEOS
-          # نسخ المكتبة و header إلى Theos
+
+          # نسخ الناتج إلى Theos
           cp libtitanox.dylib $THEOS/lib/
           cp Titanox.h $THEOS/include/
 
