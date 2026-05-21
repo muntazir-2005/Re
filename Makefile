@@ -1,13 +1,12 @@
 TARGET = iphone:clang:latest:15.0
 ARCHS = arm64 arm64e
 
-# استبدل بـ اسم التطبيق المستهدف (مثلاً pubg أو غيره)
 INSTALL_TARGET_PROCESSES = YourGameExecutable
 
 include $(THEOS)/makefiles/common.mk
 
 TWEAK_NAME = ANOGS
-ANOGS_FILES = Tweak.x fishhook.c
+ANOGS_FILES = Tweak.x
 ANOGS_FRAMEWORKS = UIKit Security
 ANOGS_CFLAGS = -fobjc-arc -I.
 
