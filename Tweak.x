@@ -6,27 +6,13 @@
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <mach/mach.h>
+#import "fishhook.h"
 #import <CommonCrypto/CommonHMAC.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <time.h>
 #include <stdlib.h>
 
-// ==================== تصريح يدوي ====================
-extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
-extern const char* _dyld_get_image_name(uint32_t image_index);
-extern const struct mach_header* _dyld_get_image_header(uint32_t image_index);
-
-// ==================== تعريف DYLD_INTERPOSE ====================
-#define DYLD_INTERPOSE(_replacement, _replacee) \
-    __attribute__((used)) static struct { \
-        const void *replacement; \
-        const void *replacee; \
-    } _interpose_##_replacee __attribute__((section("__DATA,__interpose"))) = { \
-        (const void *)(unsigned long)&_replacement, \
-        (const void *)(unsigned long)&_replacee \
-    };
-
-// ==================== تشفير السلاسل النصية ====================
+// ==================== تشفير السلاسل ====================
 static NSString* _ds(unsigned char *enc, int len, unsigned char key) {
     unsigned char *dec = malloc(len + 1);
     for (int i = 0; i < len; i++) dec[i] = enc[i] ^ key;
@@ -36,52 +22,41 @@ static NSString* _ds(unsigned char *enc, int len, unsigned char key) {
     return str;
 }
 
-// ==================== دوال آمنة باستخدام RTLD_NEXT ====================
-
-// 1. sysctl
+// ==================== 1. sysctl ====================
+static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int _sysctl_h(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    static int (*real_sysctl)(int *, u_int, void *, size_t *, void *, size_t) = NULL;
-    if (!real_sysctl) real_sysctl = dlsym(RTLD_NEXT, "sysctl");
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) return -1;
-    return real_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
+    return orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 }
-DYLD_INTERPOSE(_sysctl_h, sysctl);
 
-// 2. sysctlbyname
+// ==================== 2. sysctlbyname ====================
+static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 static int _sysctlbyname_h(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    static int (*real_sysctlbyname)(const char *, void *, size_t *, void *, size_t) = NULL;
-    if (!real_sysctlbyname) real_sysctlbyname = dlsym(RTLD_NEXT, "sysctlbyname");
     NSString *procWord = _ds((unsigned char[]){0x76,0x73,0x76,0x70}, 4, 0x05);
     if (name && strstr(name, [procWord UTF8String])) return -1;
-    return real_sysctlbyname(name, oldp, oldlenp, newp, newlen);
+    return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
 }
-DYLD_INTERPOSE(_sysctlbyname_h, sysctlbyname);
 
-// 3. ptrace
+// ==================== 3. ptrace ====================
 #define PT_DENY_ATTACH 31
+static int (*orig_ptrace)(int, pid_t, caddr_t, int);
 static int _ptrace_h(int request, pid_t pid, caddr_t addr, int data) {
-    static int (*real_ptrace)(int, pid_t, caddr_t, int) = NULL;
-    if (!real_ptrace) real_ptrace = dlsym(RTLD_NEXT, "ptrace");
     if (request == PT_DENY_ATTACH) return 0;
-    return real_ptrace(request, pid, addr, data);
+    return orig_ptrace(request, pid, addr, data);
 }
-DYLD_INTERPOSE(_ptrace_h, ptrace);
 
-// 4. getenv
+// ==================== 4. getenv ====================
+static char* (*orig_getenv)(const char *);
 static char* _getenv_h(const char *name) {
-    static char* (*real_getenv)(const char *) = NULL;
-    if (!real_getenv) real_getenv = dlsym(RTLD_NEXT, "getenv");
     NSString *libInsert = _ds((unsigned char[]){0x25,0x2E,0x26,0x2B,0x5F,0x2C,0x28,0x2A,0x23,0x2A,0x5F,0x26,0x2C,0x29,0x23,0x2E,0x23,0x2A,0x2A,0x2C}, 20, 0x55);
     if (name && strcmp(name, [libInsert UTF8String]) == 0) return NULL;
-    return real_getenv(name);
+    return orig_getenv(name);
 }
-DYLD_INTERPOSE(_getenv_h, getenv);
 
-// 5. uname
+// ==================== 5. uname ====================
+static int (*orig_uname)(struct utsname *);
 static int _uname_h(struct utsname *buf) {
-    static int (*real_uname)(struct utsname *) = NULL;
-    if (!real_uname) real_uname = dlsym(RTLD_NEXT, "uname");
-    int ret = real_uname(buf);
+    int ret = orig_uname(buf);
     if (ret == 0 && buf) {
         NSString *machineModel = _ds((unsigned char[]){0x2D,0x2A,0x27,0x28,0x28,0x2A,0x2F,0x25,0x22,0x28}, 10, 0x55);
         strlcpy(buf->machine, [machineModel UTF8String], sizeof(buf->machine));
@@ -90,43 +65,35 @@ static int _uname_h(struct utsname *buf) {
     }
     return ret;
 }
-DYLD_INTERPOSE(_uname_h, uname);
 
-// 6. dyld (إخفاء المكتبة)
+// ==================== 6. dyld hooks ====================
+static const char* (*orig_dyld_name)(uint32_t);
+static const struct mach_header* (*orig_dyld_header)(uint32_t);
 static const char* _dyld_name_h(uint32_t idx) {
-    static const char* (*real_name)(uint32_t) = NULL;
-    if (!real_name) real_name = dlsym(RTLD_DEFAULT, "_dyld_get_image_name");
-    const char *n = real_name(idx);
+    const char *n = orig_dyld_name(idx);
     NSString *libName = _ds((unsigned char[]){0x2E,0x28,0x28,0x2A,0x2F,0x26,0x2B,0x2A,0x25,0x2E}, 10, 0x55);
     if (n && strstr(n, [libName UTF8String])) return "";
     return n;
 }
-DYLD_INTERPOSE(_dyld_name_h, _dyld_get_image_name);
-
 static const struct mach_header* _dyld_header_h(uint32_t idx) {
-    static const struct mach_header* (*real_header)(uint32_t) = NULL;
-    if (!real_header) real_header = dlsym(RTLD_DEFAULT, "_dyld_get_image_header");
-    const char *n = _dyld_get_image_name(idx);
+    const char *n = orig_dyld_name(idx);
     NSString *libName = _ds((unsigned char[]){0x2E,0x28,0x28,0x2A,0x2F,0x26,0x2B,0x2A,0x25,0x2E}, 10, 0x55);
     if (n && strstr(n, [libName UTF8String])) return NULL;
-    return real_header(idx);
+    return orig_dyld_header(idx);
 }
-DYLD_INTERPOSE(_dyld_header_h, _dyld_get_image_header);
 
-// 7. vm_region_recurse_64
+// ==================== 7. vm_region_recurse_64 ====================
+static kern_return_t (*orig_vm_region)(mach_port_t, vm_address_t *, vm_size_t *, natural_t *, vm_region_recurse_info_t, mach_msg_type_number_t *);
 static kern_return_t _vm_region_h(mach_port_t target, vm_address_t *addr, vm_size_t *size, natural_t *depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt) {
-    static kern_return_t (*real_vm)(mach_port_t, vm_address_t *, vm_size_t *, natural_t *, vm_region_recurse_info_t, mach_msg_type_number_t *) = NULL;
-    if (!real_vm) real_vm = dlsym(RTLD_DEFAULT, "vm_region_recurse_64");
-    kern_return_t ret = real_vm(target, addr, size, depth, info, infoCnt);
+    kern_return_t ret = orig_vm_region(target, addr, size, depth, info, infoCnt);
     if (ret == KERN_SUCCESS && infoCnt && *infoCnt >= sizeof(vm_region_submap_info_data_64_t)) {
         vm_region_submap_info_data_64_t *submap = (vm_region_submap_info_data_64_t *)info;
         submap->protection = VM_PROT_READ | VM_PROT_EXECUTE;
     }
     return ret;
 }
-DYLD_INTERPOSE(_vm_region_h, vm_region_recurse_64);
 
-// ==================== دوال البصمة (بدون تغيير) ====================
+// ==================== دوال البصمة ====================
 static NSString* _hmac_sha256(NSString *msg, NSString *key) {
     const char *ckey = [key UTF8String], *cdata = [msg UTF8String];
     unsigned char hmac[CC_SHA256_DIGEST_LENGTH];
@@ -163,7 +130,7 @@ static NSString* _generateFingerprint() {
 
 static NSString *_currentFP = nil;
 
-// ==================== Swizzling Objective-C (آمن) ====================
+// ==================== Swizzling Objective-C ====================
 static NSOperatingSystemVersion _osVer_h(id self, SEL _cmd) {
     return (NSOperatingSystemVersion){17, 4, 1};
 }
@@ -213,11 +180,23 @@ static void _showModernAlert() {
     });
 }
 
-// ==================== التهيئة ====================
+// ==================== التهيئة (fishhook) ====================
 __attribute__((constructor))
 static void _init() {
     @autoreleasepool {
-        // تعطيل أي استدعاء لدوال DYLD_INTERPOSE قبل أن تصبح جاهزة (فهي الآن تستخدم dlsym الآمن)
+        // fishhook - آمن ولا يسبب deadlock
+        struct rebinding reb[] = {
+            {"sysctl", _sysctl_h, (void**)&orig_sysctl},
+            {"sysctlbyname", _sysctlbyname_h, (void**)&orig_sysctlbyname},
+            {"ptrace", _ptrace_h, (void**)&orig_ptrace},
+            {"getenv", _getenv_h, (void**)&orig_getenv},
+            {"uname", _uname_h, (void**)&orig_uname},
+            {"_dyld_get_image_name", _dyld_name_h, (void**)&orig_dyld_name},
+            {"_dyld_get_image_header", _dyld_header_h, (void**)&orig_dyld_header},
+            {"vm_region_recurse_64", _vm_region_h, (void**)&orig_vm_region}
+        };
+        rebind_symbols(reb, sizeof(reb)/sizeof(reb[0]));
+
         // Swizzling Objective-C
         class_replaceMethod(objc_getClass("NSProcessInfo"), @selector(operatingSystemVersion), (IMP)_osVer_h, "@@:");
         class_replaceMethod(objc_getClass("UIDevice"), @selector(model), (IMP)_model_h, "@@:");
