@@ -1,4 +1,4 @@
-name: ANOGS + Titanox CI (Fixed SDK)
+name: ANOGS-AI CI (Fishhook)
 
 on:
   push:
@@ -11,68 +11,66 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout ANOGS repository
+      - name: Checkout repository
         uses: actions/checkout@v4
-
-      - name: Update Homebrew and Install Tools
-        run: |
-          set -e
-          brew update
-          brew install dpkg ldid
 
       - name: Setup Theos
         run: |
-          set -e
+          brew install dpkg ldid
           export THEOS=/opt/theos
           echo "THEOS=$THEOS" >> $GITHUB_ENV
           sudo mkdir -p $THEOS
           sudo chown -R $USER:staff $THEOS
           git clone --recursive https://github.com/theos/theos.git $THEOS --depth=1
-          mkdir -p $THEOS/sdks # تأكد من وجود مجلد sdks
 
-      - name: Install iOS SDKs
+      - name: Build tweak
         run: |
-          set -e
           export THEOS=/opt/theos
-          cd /tmp
-          git clone https://github.com/Tonwalter888/iOS-SDKs.git --depth=1
-          cd iOS-SDKs
-          mkdir -p $THEOS/sdks
-          if [ -d "iPhoneOS18.6.sdk" ]; then
-            cp -r iPhoneOS18.6.sdk $THEOS/sdks/
-          else
-            echo "Warning: iPhoneOS18.6.sdk not found, attempting fallback..."
-            ls -la | grep -i iPhone || true
-          fi
-          ls -la $THEOS/sdks/
+          export PATH=$THEOS/bin:$PATH
+          make package FINALPACKAGE=1
 
-      - name: Clone and build Titanox (patched)
+      - name: Prepare artifacts
         run: |
-          set -e
-          export THEOS=/opt/theos
-          cd /tmp
-          git clone https://github.com/Ragekill3377/Titanox.git --depth=1
-          cd Titanox/libtitanox
-          # إضافة pthread.h إذا مفقود
-          if ! grep -q '#include <pthread.h>' utils/utils.mm; then
-            TMPFILE=$(mktemp)
-            echo '#include <pthread.h>' > $TMPFILE
-            cat utils/utils.mm >> $TMPFILE
-            mv $TMPFILE utils/utils.mm
-          fi
-          # تحديث الـ Makefile للمسارات الصحيحة
-          sed -i '' 's|THEOS = /home/rage/theos|THEOS = /opt/theos|g' Makefile
-          sed -i '' 's|SYSROOT = $(THEOS)/sdks/iPhoneOS13.7.sdk|SYSROOT = $(THEOS)/sdks/iPhoneOS18.6.sdk|g' Makefile
-          sed -i '' 's|cp /home/rage/theos/lib/libtitanox.dylib|cp $(THEOS)/lib/libtitanox.dylib|g' Makefile
-          echo "===== Patched Makefile ====="
-          head -10 Makefile
-          make THEOS=$THEOS
           mkdir -p output
-          cp libtitanox.dylib output/
-          cp Titanox.h output/
+          if ls packages/*.deb 1> /dev/null 2>&1; then
+            cp packages/*.deb output/
+            DEB_FILE=$(ls packages/*.deb | head -1)
+            mkdir -p deb_extract
+            dpkg-deb -x "$DEB_FILE" deb_extract
+            find deb_extract -name "*.dylib" -exec cp {} output/ANOGS.dylib \;
+            rm -rf deb_extract
+          fi
+          ls -la output/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ANOGS-Titanox
-          path: /tmp/Titanox/libtitanox/output/
+          name: ANOGS-AI
+          path: output/
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: ANOGS-AI
+          path: artifacts
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          name: "ANOGS-AI ${{ github.ref_name }}"
+          body: |
+            **ANOGS-AI** – إصدار جديد مع حماية AI وبصمة متغيرة.
+            يحتوي على:
+            - مكتبة `ANOGS.dylib` جاهزة للحقن (fishhook)
+            - ملف `.deb` للتثبيت
+            - AntiBan قوي متوافق مع iOS 15-18.5
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
