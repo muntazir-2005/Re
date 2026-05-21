@@ -25,25 +25,18 @@ jobs:
 
       - name: Clone and build Titanox
         run: |
+          export THEOS=/opt/theos
           cd /tmp
           git clone https://github.com/Ragekill3377/Titanox.git --depth=1
           cd Titanox/libtitanox
-          make
+          # تجاوز مسار THEOS الداخلي في Titanox
+          sed -i '' 's|/home/rage/theos|$(THEOS)|g' Makefile
+          make THEOS=$THEOS
           # نسخ المكتبة و header إلى Theos
           cp libtitanox.dylib $THEOS/lib/
           cp Titanox.h $THEOS/include/
 
-      - name: Prepare Makefile for Titanox
-        run: |
-          # إضافة ربط Titanox إلى Makefile (يُضاف بعد إطار عمل UIKit Security)
-          if grep -q "ANOGS_LDFLAGS" Makefile; then
-            echo "Titanox already configured"
-          else
-            echo "" >> Makefile
-            echo "ANOGS_LDFLAGS = -L$(THEOS)/lib -ltitanox" >> Makefile
-          fi
-
-      - name: Build tweak (ANOGS + Titanox)
+      - name: Build tweak (ANOGS)
         run: |
           export THEOS=/opt/theos
           export PATH=$THEOS/bin:$PATH
@@ -67,31 +60,3 @@ jobs:
         with:
           name: ANOGS-Titanox
           path: output/
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ANOGS-Titanox
-          path: artifacts
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          name: "ANOGS ${{ github.ref_name }} (Titanox)"
-          body: |
-            **ANOGS + Titanox** – الجيل الجديد من الحماية.
-            يحتوي على:
-            - مكتبة `ANOGS.dylib` جاهزة للحقن (Titanox hooks)
-            - ملف `.deb` للتثبيت (اختياري)
-            - بصمة ديناميكية مشفرة
-            - نظام ذكاء اصطناعي للمراوغة
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
