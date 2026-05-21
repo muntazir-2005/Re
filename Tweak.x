@@ -251,6 +251,6 @@ static void ultimateInit() {
             if (keyWindow && keyWindow.rootViewController) {
                 [keyWindow.rootViewController presentViewController:alert animated:YES completion:nil];
             }
-        });
-    });
-}];
+        }
+    }
+}
