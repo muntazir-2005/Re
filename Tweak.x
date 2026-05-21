@@ -11,12 +11,12 @@
 #include <time.h>
 #include <stdlib.h>
 
-// ==================== تصريحات يدوية ====================
+// ==================== تصريح يدوي للدوال المخفية ====================
 extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
 extern const char* _dyld_get_image_name(uint32_t idx);
 extern const struct mach_header* _dyld_get_image_header(uint32_t idx);
 
-// ==================== مؤشرات أصلية ====================
+// ==================== مؤشرات الدوال الأصلية ====================
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 static int (*orig_ptrace)(int, pid_t, caddr_t, int);
@@ -26,24 +26,28 @@ static const char* (*orig_dyld_name)(uint32_t);
 static const struct mach_header* (*orig_dyld_header)(uint32_t);
 static kern_return_t (*orig_vm_region)(mach_port_t, vm_address_t *, vm_size_t *, natural_t *, vm_region_recurse_info_t, mach_msg_type_number_t *);
 
-// ==================== دوال الحماية ====================
+// ==================== بدائل الحماية ====================
 static int _sysctl_h(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) return -1;
     return orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 }
+
 static int _sysctlbyname_h(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     if (name && strstr(name, "proc")) return -1;
     return orig_sysctlbyname(name, oldp, oldlenp, newp, newlen);
 }
+
 #define PT_DENY_ATTACH 31
 static int _ptrace_h(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
     return orig_ptrace(request, pid, addr, data);
 }
+
 static char* _getenv_h(const char *name) {
     if (name && strcmp(name, "DYLD_INSERT_LIBRARIES") == 0) return NULL;
     return orig_getenv(name);
 }
+
 static int _uname_h(struct utsname *buf) {
     int ret = orig_uname(buf);
     if (ret == 0 && buf) {
@@ -52,16 +56,19 @@ static int _uname_h(struct utsname *buf) {
     }
     return ret;
 }
+
 static const char* _dyld_name_h(uint32_t idx) {
     const char *n = orig_dyld_name(idx);
     if (n && strstr(n, "ANOGS.dylib")) return "";
     return n;
 }
+
 static const struct mach_header* _dyld_header_h(uint32_t idx) {
     const char *n = orig_dyld_name(idx);
     if (n && strstr(n, "ANOGS.dylib")) return NULL;
     return orig_dyld_header(idx);
 }
+
 static kern_return_t _vm_region_h(mach_port_t target, vm_address_t *addr, vm_size_t *size, natural_t *depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt) {
     kern_return_t ret = orig_vm_region(target, addr, size, depth, info, infoCnt);
     if (ret == KERN_SUCCESS && infoCnt && *infoCnt >= sizeof(vm_region_submap_info_data_64_t)) {
@@ -103,7 +110,7 @@ static NSString *_currentFP = nil;
 
 // ==================== Swizzling خصائص الجهاز ====================
 static NSOperatingSystemVersion _osVer_h(id self, SEL _cmd) {
-    return (NSOperatingSystemVersion){17,4,1};
+    return (NSOperatingSystemVersion){17, 4, 1};
 }
 static NSString* _model_h(id self, SEL _cmd) { return @"iPhone15,3"; }
 static NSUUID* _idfv_h(id self, SEL _cmd) {
@@ -118,11 +125,11 @@ static BOOL _fileExists_h(id self, SEL _cmd, NSString *path) {
     return orig(self, _cmd, path);
 }
 
-// ==================== اعتراض الشبكة (حقن البصمة) ====================
+// ==================== اعتراض الشبكة ====================
 static void (*orig_setValueHTTP)(id, SEL, NSString*, NSString*);
 static void _setValueHTTP_h(id self, SEL _cmd, NSString *val, NSString *field) {
     if ([field isEqualToString:@"X-AI-Fingerprint"])
-        val = _currentFP; // استبدال البصمة كل مرة
+        val = _currentFP;
     orig_setValueHTTP(self, _cmd, val, field);
 }
 
@@ -138,7 +145,7 @@ static void _showAlert() {
 
         UIAlertController *alert = [UIAlertController
             alertControllerWithTitle:@"🔐 ANOGS-AI"
-            message:[NSString stringWithFormat:@"✅ التجاوز نشط\nالبصمة: %@", _currentFP]
+            message:[NSString stringWithFormat:@"✅ تم التجاوز بنجاح\nالبصمة: %@", _currentFP]
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
             alertWindow.hidden = YES;
