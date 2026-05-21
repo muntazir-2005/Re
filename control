@@ -1,0 +1,8 @@
+Package: com.sovereign.v41
+Name: SovereignSecurity
+Depends: mobilesubstrate
+Version: 41.0.0
+Architecture: iphoneos-arm
+Description: Absolute Fortress - 1338 Strings Crypted.
+Maintainer: Senior Architect
+Author: Sovereign Team
