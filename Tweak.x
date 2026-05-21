@@ -12,42 +12,28 @@
 #include <time.h>
 #include <stdlib.h>
 
-// ============================================================
-// أداة مساعدة للطباعة الآمنة
-// ============================================================
 #define DBG(fmt, ...) NSLog(@"[BYPASS] " fmt, ##__VA_ARGS__)
 
-// ============================================================
-// 1. تعطيل sysctl (إخفاء العمليات والـ debugger)
-// ============================================================
+// ---------- 1. sysctl ----------
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int hooked_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    // منع أي طلب لفحص العمليات (KERN_PROC)
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) {
-        return -1; // فشل آمن
+        return -1;
     }
     return orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
 }
 
-// ============================================================
-// 2. منع ptrace دون استخدام ملف الرأس المفقود
-// ============================================================
-// تعريف ثابت PT_DENY_ATTACH يدوياً (قيمته 31)
+// ---------- 2. ptrace ----------
 #define PT_DENY_ATTACH 31
-
-// نعرّف دالة ptrace بأنفسنا بنفس signature النظام
 static int (*orig_ptrace)(int, pid_t, caddr_t, int);
 static int hooked_ptrace(int request, pid_t pid, caddr_t addr, int data) {
-    // إذا حاول التطبيق الاتصال بـ PT_DENY_ATTACH نرفضه بصمت
     if (request == PT_DENY_ATTACH) {
-        return 0; // نجاح وهمي، لا نسمح بتعطيل التصحيح
+        return 0;
     }
     return orig_ptrace(request, pid, addr, data);
 }
 
-// ============================================================
-// 3. تزوير معلومات النظام (إصدار iOS، الموديل، IDFV، uname)
-// ============================================================
+// ---------- 3. تزوير النظام ----------
 static NSOperatingSystemVersion (*orig_OSVersion)(id, SEL);
 static NSOperatingSystemVersion hooked_OSVersion(id self, SEL _cmd) {
     return (NSOperatingSystemVersion){17, 4, 1};
@@ -74,9 +60,7 @@ static int hooked_uname(struct utsname *buf) {
     return ret;
 }
 
-// ============================================================
-// 4. إخفاء ملفات الجيلبريك وأدوات التحليل
-// ============================================================
+// ---------- 4. إخفاء الملفات ----------
 static BOOL (*orig_fileExists)(id, SEL, NSString*);
 static BOOL hooked_fileExists(id self, SEL _cmd, NSString *path) {
     NSArray *blacklist = @[
@@ -91,9 +75,7 @@ static BOOL hooked_fileExists(id self, SEL _cmd, NSString *path) {
     return orig_fileExists(self, _cmd, path);
 }
 
-// ============================================================
-// 5. إخفاء مكتبتنا من قائمة dyld
-// ============================================================
+// ---------- 5. إخفاء dyld ----------
 typedef const struct mach_header* (*dyld_get_image_header_t)(uint32_t);
 typedef const char* (*dyld_get_image_name_t)(uint32_t);
 static dyld_get_image_header_t orig_get_image_header;
@@ -115,9 +97,7 @@ static const struct mach_header* hooked_dyld_get_image_header(uint32_t idx) {
     return orig_get_image_header(idx);
 }
 
-// ============================================================
-// 6. توليد بصمة رقمية متغيرة لكل جلسة (تقنية 726/106)
-// ============================================================
+// ---------- 6. البصمة المتغيرة ----------
 static NSString* generateSessionFingerprint() {
     NSString *sessionUUID = [[NSUUID UUID] UUIDString];
     NSTimeInterval ts = [[NSDate date] timeIntervalSince1970];
@@ -136,11 +116,9 @@ static NSString* generateSessionFingerprint() {
     return [fp substringToIndex:64];
 }
 
-// ============================================================
-// 7. اعتراض طلبات الشبكة وحقن البصمة
-// ============================================================
 static NSString *currentFingerprint = nil;
 
+// ---------- 7. اعتراض الشبكة ----------
 static void (*orig_setValueForHTTPHeaderField)(id, SEL, NSString*, NSString*);
 static void hooked_setValueForHTTPHeaderField(id self, SEL _cmd, NSString *value, NSString *field) {
     if ([field isEqualToString:@"X-Device-Fingerprint"]) {
@@ -158,9 +136,7 @@ static id hooked_dataTaskWithRequest(id self, SEL _cmd, NSURLRequest *request, i
     return orig_dataTaskWithRequest(self, _cmd, mutableReq, handler);
 }
 
-// ============================================================
-// 8. إخفاء متغيرات البيئة المشبوهة (DYLD_INSERT_LIBRARIES)
-// ============================================================
+// ---------- 8. إخفاء متغيرات البيئة ----------
 static char* (*orig_getenv)(const char *name);
 static char* hooked_getenv(const char *name) {
     if (name && (strcmp(name, "DYLD_INSERT_LIBRARIES") == 0 ||
@@ -170,13 +146,11 @@ static char* hooked_getenv(const char *name) {
     return orig_getenv(name);
 }
 
-// ============================================================
-// 9. التهيئة النهائية
-// ============================================================
+// ---------- 9. التهيئة ----------
 __attribute__((constructor))
 static void ultimateInit() {
     @autoreleasepool {
-        // ---- fishhook ----
+        // fishhook hooks
         struct rebinding sysctl_rb = {"sysctl", hooked_sysctl, (void**)&orig_sysctl};
         rebind_symbols(&sysctl_rb, 1);
 
@@ -195,7 +169,7 @@ static void ultimateInit() {
         };
         rebind_symbols(dyld_rebinds, 2);
 
-        // ---- ObjC Swizzling ----
+        // ObjC swizzling
         Class procInfo = NSClassFromString(@"NSProcessInfo");
         Method osVerM = class_getInstanceMethod(procInfo, @selector(operatingSystemVersion));
         if (osVerM) {
@@ -236,7 +210,40 @@ static void ultimateInit() {
             method_setImplementation(dataTaskM, (IMP)hooked_dataTaskWithRequest);
         }
 
+        // توليد البصمة
         currentFingerprint = generateSessionFingerprint();
         DBG(@"✅ All protections active | Fingerprint: %@", currentFingerprint);
+
+        // ============================================================
+        // واجهة رسومية: "تمت الإضافة بنجاح" عند تشغيل التطبيق
+        // ============================================================
+        [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidBecomeActiveNotification
+                                                          object:nil
+                                                           queue:[NSOperationQueue mainQueue]
+                                                      usingBlock:^(NSNotification *note) {
+            static dispatch_once_t onceToken;
+            dispatch_once(&onceToken, ^{
+                dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+                    UIAlertController *alert = [UIAlertController
+                        alertControllerWithTitle:@"🔐 Bypass"
+                        message:[NSString stringWithFormat:@"✅ تمت الإضافة بنجاح\nالبصمة: %@", currentFingerprint ?: @"غير متاحة"]
+                        preferredStyle:UIAlertControllerStyleAlert];
+                    
+                    UIAlertAction *ok = [UIAlertAction actionWithTitle:@"موافق"
+                                                                 style:UIAlertActionStyleDefault
+                                                               handler:nil];
+                    [alert addAction:ok];
+                    
+                    UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
+                    if (!keyWindow) {
+                        keyWindow = [UIApplication sharedApplication].windows.firstObject;
+                    }
+                    
+                    if (keyWindow && keyWindow.rootViewController) {
+                        [keyWindow.rootViewController presentViewController:alert animated:YES completion:nil];
+                    }
+                });
+            });
+        }];
     }
 }
