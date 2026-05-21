@@ -6,16 +6,11 @@
 #import <dlfcn.h>
 #import <objc/runtime.h>
 #import <mach/mach.h>
+#import "Titanox.h"
 #import <CommonCrypto/CommonHMAC.h>
 #import <CommonCrypto/CommonDigest.h>
 #include <time.h>
 #include <stdlib.h>
-#include "dobby.h"
-
-// ==================== تصريح يدوي للدوال المخفية ====================
-extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
-extern const char* _dyld_get_image_name(uint32_t image_index);
-extern const struct mach_header* _dyld_get_image_header(uint32_t image_index);
 
 // ==================== تشفير السلاسل ====================
 static NSString* _ds(unsigned char *enc, int len, unsigned char key) {
@@ -27,6 +22,32 @@ static NSString* _ds(unsigned char *enc, int len, unsigned char key) {
     return str;
 }
 
+// ==================== نظام الذكاء الاصطناعي ANOGS-AI ====================
+@interface AnogsAI : NSObject
++ (void)startMonitoring;
++ (void)evasiveAction;
+@end
+
+@implementation AnogsAI
++ (void)startMonitoring {
+    // مراقبة إشعارات الفحص الأمني
+    [[NSDistributedNotificationCenter defaultCenter] addObserverForName:@"com.apple.security.scan"
+                                                                  object:nil
+                                                                   queue:[NSOperationQueue mainQueue]
+                                                              usingBlock:^(NSNotification *note) {
+        NSLog(@"[ANOGS-AI] ⚠️ Security scan detected! Activating evasive maneuvers...");
+        [self evasiveAction];
+    }];
+    NSLog(@"[ANOGS-AI] AI monitoring active.");
+}
+
++ (void)evasiveAction {
+    // تغيير البصمة فوراً وتشويش إضافي
+    _currentFP = _generateFingerprint();
+    // يمكن إضافة المزيد من إجراءات التمويه هنا
+}
+@end
+
 // ==================== مؤشرات الدوال الأصلية ====================
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
@@ -37,7 +58,7 @@ static const char* (*orig_dyld_name)(uint32_t);
 static const struct mach_header* (*orig_dyld_header)(uint32_t);
 static kern_return_t (*orig_vm_region)(mach_port_t, vm_address_t *, vm_size_t *, natural_t *, vm_region_recurse_info_t, mach_msg_type_number_t *);
 
-// ==================== الدوال البديلة ====================
+// ==================== الدوال البديلة (الحماية) ====================
 static int _sysctl_h(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     if (namelen >= 2 && name[0] == CTL_KERN && name[1] == KERN_PROC) return -1;
     return orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen);
@@ -95,7 +116,7 @@ static kern_return_t _vm_region_h(mach_port_t target, vm_address_t *addr, vm_siz
     return ret;
 }
 
-// ==================== دوال البصمة ====================
+// ==================== دوال البصمة المتطورة ====================
 static NSString* _hmac_sha256(NSString *msg, NSString *key) {
     const char *ckey = [key UTF8String], *cdata = [msg UTF8String];
     unsigned char hmac[CC_SHA256_DIGEST_LENGTH];
@@ -132,7 +153,7 @@ static NSString* _generateFingerprint() {
 
 static NSString *_currentFP = nil;
 
-// ==================== Swizzling Objective-C ====================
+// ==================== Swizzling Objective-C (آمن) ====================
 static NSOperatingSystemVersion _osVer_h(id self, SEL _cmd) {
     return (NSOperatingSystemVersion){17, 4, 1};
 }
@@ -172,7 +193,7 @@ static void _showModernAlert() {
         [alertWindow makeKeyAndVisible];
 
         UIAlertController *alert = [UIAlertController
-            alertControllerWithTitle:@"🔐 ANOGS"
+            alertControllerWithTitle:@"🔐 ANOGS AI"
             message:[NSString stringWithFormat:@"✅ تم التجاوز بنجاح\nالبصمة: %@", _currentFP]
             preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
@@ -182,36 +203,41 @@ static void _showModernAlert() {
     });
 }
 
-// ==================== التهيئة (Dobby) ====================
+// ==================== التهيئة (Titanox + AI) ====================
 __attribute__((constructor))
 static void _init() {
     @autoreleasepool {
-        // تثبيت جميع الخطافات
-        DobbyHook((void *)sysctl, (void *)_sysctl_h, (void **)&orig_sysctl);
-        DobbyHook((void *)sysctlbyname, (void *)_sysctlbyname_h, (void **)&orig_sysctlbyname);
-        DobbyHook((void *)ptrace, (void *)_ptrace_h, (void **)&orig_ptrace);
-        DobbyHook((void *)getenv, (void *)_getenv_h, (void **)&orig_getenv);
-        DobbyHook((void *)uname, (void *)_uname_h, (void **)&orig_uname);
-        DobbyHook((void *)_dyld_get_image_name, (void *)_dyld_name_h, (void **)&orig_dyld_name);
-        DobbyHook((void *)_dyld_get_image_header, (void *)_dyld_header_h, (void **)&orig_dyld_header);
-        DobbyHook((void *)vm_region_recurse_64, (void *)_vm_region_h, (void **)&orig_vm_region);
+        // تثبيت الخطافات عبر Titanox
+        [TitanoxHook hookStaticFunction:"sysctl" withReplacement:_sysctl_h outOldFunction:&orig_sysctl];
+        [TitanoxHook hookStaticFunction:"sysctlbyname" withReplacement:_sysctlbyname_h outOldFunction:&orig_sysctlbyname];
+        [TitanoxHook hookStaticFunction:"ptrace" withReplacement:_ptrace_h outOldFunction:&orig_ptrace];
+        [TitanoxHook hookStaticFunction:"getenv" withReplacement:_getenv_h outOldFunction:&orig_getenv];
+        [TitanoxHook hookStaticFunction:"uname" withReplacement:_uname_h outOldFunction:&orig_uname];
+        [TitanoxHook hookStaticFunction:"_dyld_get_image_name" withReplacement:_dyld_name_h outOldFunction:&orig_dyld_name];
+        [TitanoxHook hookStaticFunction:"_dyld_get_image_header" withReplacement:_dyld_header_h outOldFunction:&orig_dyld_header];
+        [TitanoxHook hookStaticFunction:"vm_region_recurse_64" withReplacement:_vm_region_h outOldFunction:&orig_vm_region];
 
-        // Swizzling Objective-C
-        class_replaceMethod(objc_getClass("NSProcessInfo"), @selector(operatingSystemVersion), (IMP)_osVer_h, "@@:");
-        class_replaceMethod(objc_getClass("UIDevice"), @selector(model), (IMP)_model_h, "@@:");
-        class_replaceMethod(objc_getClass("UIDevice"), @selector(identifierForVendor), (IMP)_idfv_h, "@@:");
-        class_replaceMethod(objc_getClass("NSFileManager"), @selector(fileExistsAtPath:), (IMP)_fileExists_h, "B@:@");
+        // Swizzling Objective-C عبر Titanox
+        [TitanoxHook overrideMethodInClass:[NSProcessInfo class] selector:@selector(operatingSystemVersion) withNewFunction:_osVer_h oldFunctionPointer:NULL];
+        [TitanoxHook overrideMethodInClass:[UIDevice class] selector:@selector(model) withNewFunction:_model_h oldFunctionPointer:NULL];
+        [TitanoxHook overrideMethodInClass:[UIDevice class] selector:@selector(identifierForVendor) withNewFunction:_idfv_h oldFunctionPointer:NULL];
+        [TitanoxHook overrideMethodInClass:[NSFileManager class] selector:@selector(fileExistsAtPath:) withNewFunction:_fileExists_h oldFunctionPointer:NULL];
 
-        Class req = objc_getClass("NSMutableURLRequest");
-        Method m = class_getInstanceMethod(req, @selector(setValue:forHTTPHeaderField:));
+        // اعتراض الشبكة (استثناء يستخدم runtime العادي)
+        Method m = class_getInstanceMethod([NSMutableURLRequest class], @selector(setValue:forHTTPHeaderField:));
         if (m) {
             orig_setValue = (void*)method_getImplementation(m);
             method_setImplementation(m, (IMP)_setValue_h);
         }
 
+        // البصمة الأولى
         _currentFP = _generateFingerprint();
-        NSLog(@"[ANOGS] ✅ All protections active | FP: %@", _currentFP);
+        NSLog(@"[ANOGS-AI] ✅ All protections active | FP: %@", _currentFP);
 
+        // تشغيل نظام الذكاء الاصطناعي
+        [AnogsAI startMonitoring];
+
+        // عرض الواجهة
         _showModernAlert();
     }
 }
