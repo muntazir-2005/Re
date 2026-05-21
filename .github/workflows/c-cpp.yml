@@ -1,4 +1,4 @@
-name: ANOGS + Titanox CI
+name: ANOGS + Titanox CI (Fixed SDK)
 
 on:
   push:
@@ -16,6 +16,7 @@ jobs:
 
       - name: Setup Theos
         run: |
+          set -e  # Exit on any error
           brew install dpkg ldid
           export THEOS=/opt/theos
           echo "THEOS=$THEOS" >> $GITHUB_ENV
@@ -23,28 +24,34 @@ jobs:
           sudo chown -R $USER:staff $THEOS
           git clone --recursive https://github.com/theos/theos.git $THEOS --depth=1
 
-      - name: Download iOS 18.6 SDK
+      - name: Install iOS SDKs
         run: |
+          set -e
           export THEOS=/opt/theos
           cd /tmp
           git clone https://github.com/Tonwalter888/iOS-SDKs.git --depth=1
-          cp -r iPhoneOS18.6.sdk $THEOS/sdks/
+          cd iOS-SDKs
+          
+          # Copy only the latest SDK version
+          if [ -d "iPhoneOS18.6.sdk" ]; then
+            cp -r iPhoneOS18.6.sdk $THEOS/sdks/
+          else
+            echo "Warning: iPhoneOS18.6.sdk not found, attempting fallback..."
+            ls -la | grep -i iphone || true
+          fi
+          
           ls -la $THEOS/sdks/
 
       - name: Clone and build Titanox (patched)
         run: |
+          set -e
           export THEOS=/opt/theos
           cd /tmp
           git clone https://github.com/Ragekill3377/Titanox.git --depth=1
           cd Titanox/libtitanox
 
-          # إصلاح Makefile: استبدال المسار الثابت بـ THEOS
           sed -i '' 's|THEOS = /home/rage/theos|THEOS = /opt/theos|g' Makefile
-
-          # استبدال SDK القديم بأحدث SDK متوفر
           sed -i '' 's|SYSROOT = $(THEOS)/sdks/iPhoneOS13.7.sdk|SYSROOT = $(THEOS)/sdks/iPhoneOS18.6.sdk|g' Makefile
-
-          # إصلاح مسار النسخ
           sed -i '' 's|cp /home/rage/theos/lib/libtitanox.dylib|cp $(THEOS)/lib/libtitanox.dylib|g' Makefile
 
           echo "===== Patched Makefile ====="
@@ -52,18 +59,21 @@ jobs:
 
           make THEOS=$THEOS
 
-          # نسخ الناتج إلى Theos
-          cp libtitanox.dylib $THEOS/lib/
-          cp Titanox.h $THEOS/include/
+          # Copy output to Theos with proper permissions
+          sudo mkdir -p $THEOS/lib $THEOS/include
+          sudo cp libtitanox.dylib $THEOS/lib/
+          sudo cp Titanox.h $THEOS/include/
 
       - name: Build tweak (ANOGS)
         run: |
+          set -e
           export THEOS=/opt/theos
           export PATH=$THEOS/bin:$PATH
           make package FINALPACKAGE=1
 
       - name: Prepare artifacts
         run: |
+          set -e
           mkdir -p output
           if ls packages/*.deb 1> /dev/null 2>&1; then
             cp packages/*.deb output/
@@ -72,6 +82,9 @@ jobs:
             dpkg-deb -x "$DEB_FILE" deb_extract
             find deb_extract -name "*.dylib" -exec cp {} output/ANOGS.dylib \;
             rm -rf deb_extract
+          else
+            echo "Warning: No .deb files found in packages directory"
+            ls -la packages/ || echo "packages/ directory not found"
           fi
           ls -la output/
 
