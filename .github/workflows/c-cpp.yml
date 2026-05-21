@@ -1,11 +1,9 @@
-name: Build UltimateBypass Tweak
+name: ANOGS + Titanox CI
 
 on:
   push:
     branches: [ "main" ]
     tags: [ "v*" ]
-  pull_request:
-    branches: [ "main" ]
   workflow_dispatch:
 
 jobs:
@@ -13,20 +11,39 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout ANOGS repository
         uses: actions/checkout@v4
 
       - name: Setup Theos
         run: |
           brew install dpkg ldid
-
           export THEOS=/opt/theos
           echo "THEOS=$THEOS" >> $GITHUB_ENV
           sudo mkdir -p $THEOS
           sudo chown -R $USER:staff $THEOS
           git clone --recursive https://github.com/theos/theos.git $THEOS --depth=1
 
-      - name: Build package
+      - name: Clone and build Titanox
+        run: |
+          cd /tmp
+          git clone https://github.com/Ragekill3377/Titanox.git --depth=1
+          cd Titanox/libtitanox
+          make
+          # نسخ المكتبة و header إلى Theos
+          cp libtitanox.dylib $THEOS/lib/
+          cp Titanox.h $THEOS/include/
+
+      - name: Prepare Makefile for Titanox
+        run: |
+          # إضافة ربط Titanox إلى Makefile (يُضاف بعد إطار عمل UIKit Security)
+          if grep -q "ANOGS_LDFLAGS" Makefile; then
+            echo "Titanox already configured"
+          else
+            echo "" >> Makefile
+            echo "ANOGS_LDFLAGS = -L$(THEOS)/lib -ltitanox" >> Makefile
+          fi
+
+      - name: Build tweak (ANOGS + Titanox)
         run: |
           export THEOS=/opt/theos
           export PATH=$THEOS/bin:$PATH
@@ -35,22 +52,20 @@ jobs:
       - name: Prepare artifacts
         run: |
           mkdir -p output
-          cp packages/*.deb output/ || echo "No .deb found"
-
-          DEB_FILE=$(ls packages/*.deb | head -1)
-          if [ -f "$DEB_FILE" ]; then
+          if ls packages/*.deb 1> /dev/null 2>&1; then
+            cp packages/*.deb output/
+            DEB_FILE=$(ls packages/*.deb | head -1)
             mkdir -p deb_extract
             dpkg-deb -x "$DEB_FILE" deb_extract
-            find deb_extract -name "*.dylib" -exec cp {} output/UltimateBypass.dylib \;
+            find deb_extract -name "*.dylib" -exec cp {} output/ANOGS.dylib \;
             rm -rf deb_extract
           fi
-
           ls -la output/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: UltimateBypass
+          name: ANOGS-Titanox
           path: output/
 
   release:
@@ -61,19 +76,21 @@ jobs:
       - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
-          name: UltimateBypass
+          name: ANOGS-Titanox
           path: artifacts
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          name: UltimateBypass ${{ github.ref_name }}
+          name: "ANOGS ${{ github.ref_name }} (Titanox)"
           body: |
-            إصدار جديد من UltimateBypass.
+            **ANOGS + Titanox** – الجيل الجديد من الحماية.
             يحتوي على:
-            - مكتبة `.dylib` جاهزة للحقن
-            - ملف `.deb` للتثبيت (لأجهزة الجيلبريك أيضاً)
+            - مكتبة `ANOGS.dylib` جاهزة للحقن (Titanox hooks)
+            - ملف `.deb` للتثبيت (اختياري)
+            - بصمة ديناميكية مشفرة
+            - نظام ذكاء اصطناعي للمراوغة
           draft: false
           prerelease: false
         env:
