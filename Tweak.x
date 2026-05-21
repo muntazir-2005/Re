@@ -10,9 +10,14 @@
 #import <CommonCrypto/CommonDigest.h>
 #include <time.h>
 #include <stdlib.h>
-#include "dobby.h"   // <-- تحتاج إلى ملف Dobby header
+#include "dobby.h"
 
-// ==================== تشفير السلاسل النصية ====================
+// ==================== تصريح يدوي للدوال المخفية ====================
+extern int ptrace(int request, pid_t pid, caddr_t addr, int data);
+extern const char* _dyld_get_image_name(uint32_t image_index);
+extern const struct mach_header* _dyld_get_image_header(uint32_t image_index);
+
+// ==================== تشفير السلاسل ====================
 static NSString* _ds(unsigned char *enc, int len, unsigned char key) {
     unsigned char *dec = malloc(len + 1);
     for (int i = 0; i < len; i++) dec[i] = enc[i] ^ key;
@@ -156,7 +161,7 @@ static void _setValue_h(id self, SEL _cmd, NSString *val, NSString *field) {
     orig_setValue(self, _cmd, val, field);
 }
 
-// ==================== واجهة رسومية حديثة ====================
+// ==================== واجهة حديثة ====================
 static void _showModernAlert() {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2.0 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
         UIWindow *alertWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
@@ -177,11 +182,11 @@ static void _showModernAlert() {
     });
 }
 
-// ==================== التهيئة النهائية ====================
+// ==================== التهيئة (Dobby) ====================
 __attribute__((constructor))
 static void _init() {
     @autoreleasepool {
-        // تثبيت جميع الخطافات باستخدام Dobby
+        // تثبيت جميع الخطافات
         DobbyHook((void *)sysctl, (void *)_sysctl_h, (void **)&orig_sysctl);
         DobbyHook((void *)sysctlbyname, (void *)_sysctlbyname_h, (void **)&orig_sysctlbyname);
         DobbyHook((void *)ptrace, (void *)_ptrace_h, (void **)&orig_ptrace);
