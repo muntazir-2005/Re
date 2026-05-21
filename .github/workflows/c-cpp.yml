@@ -1,4 +1,4 @@
-name: ANOGS + Titanox CI (Fixed SDK)
+name: ANOGS + Titanox CI
 
 on:
   push:
@@ -23,13 +23,11 @@ jobs:
           sudo chown -R $USER:staff $THEOS
           git clone --recursive https://github.com/theos/theos.git $THEOS --depth=1
 
-      - name: Install iOS SDKs
+      - name: Download iOS 18.6 SDK
         run: |
           export THEOS=/opt/theos
           cd /tmp
           git clone https://github.com/Tonwalter888/iOS-SDKs.git --depth=1
-          cp -r iPhoneOS16.5.sdk $THEOS/sdks/
-          cp -r iPhoneOS17.5.sdk $THEOS/sdks/
           cp -r iPhoneOS18.6.sdk $THEOS/sdks/
           ls -la $THEOS/sdks/
 
@@ -46,7 +44,7 @@ jobs:
           # استبدال SDK القديم بأحدث SDK متوفر
           sed -i '' 's|SYSROOT = $(THEOS)/sdks/iPhoneOS13.7.sdk|SYSROOT = $(THEOS)/sdks/iPhoneOS18.6.sdk|g' Makefile
 
-          # إصلاح مسار النسخ في after-package
+          # إصلاح مسار النسخ
           sed -i '' 's|cp /home/rage/theos/lib/libtitanox.dylib|cp $(THEOS)/lib/libtitanox.dylib|g' Makefile
 
           echo "===== Patched Makefile ====="
