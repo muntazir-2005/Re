@@ -1,5 +1,5 @@
 // ============================================================================
-// 完整稳定版反反调试/反越狱 Hook 库
+// 完整稳定版反反调试/反越狱 Hook 库 (نسخة معدلة ومستقرة بدون كراش)
 // 基于 fishhook (安全层) + Dobby (功能层) 双重保障，无崩溃，无需越狱
 // 编译方式: clang++ -dynamiclib -o final_hook.dylib final_hook.mm -framework Foundation -framework Security -framework LocalAuthentication -framework UIKit -I/path/to/dobby/include -L/path/to/dobby/lib -ldobby -lfishhook -framework CoreFoundation -framework CommonCrypto -lssl -lcrypto
 // ============================================================================
@@ -10,10 +10,13 @@
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
+#include <sys/sysctl.h> // تم إضافته لدعم CTL_KERN و KERN_PROC
+#include <libproc.h>    // تم إضافته لدعم جلب مسار العمليات البديل لـ procfs
+
 // تعريف يدوي لدالة ptrace والثوابت المطلوبة (غير موجودة في iOS SDK)
 #define PT_DENY_ATTACH 31
-int ptrace(int request, pid_t pid, caddr_t addr, int data);
-#include <sys/ptrace.h>
+extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
+
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
 #include <TargetConditionals.h>
@@ -58,14 +61,18 @@ static inline void obfuscate_str(char *s) {
     }
 }
 
-#define OBF(s) obfuscate_str((char[])s)
-
 static inline void junk_code(void) {
     volatile int a = rand() % 100;
     volatile int b = rand() % 100;
     volatile int c = a * b + a - b;
     (void)c;
 }
+
+// 对声明进行前置声明，防止 dlsym Hook 找不到符号
+static int my_ptrace_dobby(int request, pid_t pid, caddr_t addr, int data);
+static int my_sysctl_dobby(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn);
+static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize);
 
 // ============================================================================
 // 第一层：鱼钩安全层 —— 在应用任何 Dobby Hook 之前，先强制禁用危险系统调用
@@ -75,8 +82,7 @@ static inline void junk_code(void) {
 static int (*orig_ptrace_safe)(int request, pid_t pid, caddr_t addr, int data);
 static int my_ptrace_safe(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) {
-        // 完全忽略 PT_DENY_ATTACH，防止应用自杀
-        return 0;
+        return 0; // 完全忽略 PT_DENY_ATTACH，防止应用自杀
     }
     if (orig_ptrace_safe) return orig_ptrace_safe(request, pid, addr, data);
     return 0;
@@ -96,22 +102,18 @@ static int my_sysctl_safe(int *name, u_int namelen, void *oldp, size_t *oldlenp,
 // 最高优先级的 constructor，在 dyld 加载库时立即执行，确保所有安全 Hook 最先生效
 __attribute__((constructor(101)))
 static void initialize_fishhook_safety(void) {
-    // 避免递归调用
     static int initialized = 0;
     if (initialized) return;
     initialized = 1;
     
-    // 随机种子
     srand((unsigned int)time(NULL));
     
-    // 使用 fishhook 绑定 ptrace 和 sysctl，不能失败
     struct rebinding rebindings[] = {
         {"ptrace", (void *)my_ptrace_safe, (void **)&orig_ptrace_safe},
         {"sysctl", (void *)my_sysctl_safe, (void **)&orig_sysctl_safe},
     };
     rebind_symbols(rebindings, sizeof(rebindings) / sizeof(struct rebinding));
     
-    // 可选：强制再调用一次 ptrace 测试，确保没有崩溃
     ptrace(PT_DENY_ATTACH, 0, 0, 0);
 }
 
@@ -156,7 +158,7 @@ static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, i
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Jailbreak / Debug 检测 C 函数 (原始指针)
+// Jailbreak / Debug 检测 C 函数
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -192,8 +194,10 @@ static int my_sysctl_dobby(int *name, u_int namelen, void *oldp, size_t *oldlenp
 
 static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     junk_code();
+    if (!name) return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : -1;
     char buf[256];
     strncpy(buf, name, sizeof(buf)-1);
+    buf[sizeof(buf)-1] = '\0';
     obfuscate_str(buf);
     if (strstr(buf, "qroht") || strstr(buf, "xrea.cebp")) {
         if (oldp && oldlenp) {
@@ -211,12 +215,18 @@ static void* my_dlopen(const char *path, int mode) {
 
 static void* my_dlsym(void *handle, const char *symbol) {
     junk_code();
+    if (!symbol) return orig_dlsym ? orig_dlsym(handle, symbol) : NULL;
     char buf[256];
     strncpy(buf, symbol, sizeof(buf)-1);
+    buf[sizeof(buf)-1] = '\0';
     obfuscate_str(buf);
-    if (strstr(buf, "cgenpr") || strstr(buf, "flfpby") || strstr(buf, "gnfx_sbe_cvq") || strstr(buf, "iz_ernq")) {
-        return NULL;
-    }
+    
+    // بدلاً من إرجاع NULL مسبب للكراش، نقوم بإرجاع الدوال البديلة التابعة لنا لحماية التطبيق
+    if (strcmp(buf, "cgenpr") == 0) return (void*)my_ptrace_dobby;
+    if (strcmp(buf, "flfpby") == 0) return (void*)my_sysctl_dobby;
+    if (strcmp(buf, "gnfx_sbe_cvq") == 0) return (void*)my_task_for_pid;
+    if (strstr(buf, "iz_ernq")) return (void*)my_vm_read_overwrite;
+    
     return orig_dlsym ? orig_dlsym(handle, symbol) : NULL;
 }
 
@@ -245,24 +255,28 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain
+// Keychain Hooks (تم تعديلها لتمرير البيانات الأصلية منعاً للكراش وضياع التوكنز)
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     junk_code();
+    if (orig_SecItemCopyMatching) return orig_SecItemCopyMatching(query, result);
     return errSecItemNotFound;
 }
 
 static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
     junk_code();
+    if (orig_SecItemAdd) return orig_SecItemAdd(attributes, result);
     return errSecDuplicateItem;
 }
 
 static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
     junk_code();
+    if (orig_SecItemUpdate) return orig_SecItemUpdate(query, attributesToUpdate);
     return errSecItemNotFound;
 }
 
 static OSStatus my_SecItemDelete(CFDictionaryRef query) {
     junk_code();
+    if (orig_SecItemDelete) return orig_SecItemDelete(query);
     return errSecSuccess;
 }
 
@@ -286,12 +300,15 @@ static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm
     return true;
 }
 
+// CCCrypt Fix: تم الإصلاح لتمرير دالة التشفير الأصلية حتى لا ينقطع اتصال الشبكة والـ HTTPS داخل التطبيق
 static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved) {
     junk_code();
+    if (orig_CCCrypt) {
+        return orig_CCCrypt(op, alg, options, key, keyLength, iv, dataIn, dataInLength, dataOut, dataOutAvailable, dataOutMoved);
+    }
     if (dataOut && dataOutMoved) {
         memcpy(dataOut, dataIn, dataInLength);
         *dataOutMoved = dataInLength;
-        return kCCSuccess;
     }
     return kCCSuccess;
 }
@@ -350,10 +367,13 @@ static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
 
-static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy, id reply) {
+// LAContext Fix: تم إضافة معامل localizedReason المفقود لمنع الانهيار (Crash) عند طلب البصمة
+static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSString *localizedReason, id reply) {
     junk_code();
     void (^replyBlock)(BOOL success, NSError *error) = reply;
-    replyBlock(YES, nil);
+    if (replyBlock) {
+        replyBlock(YES, nil);
+    }
 }
 
 static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) {
@@ -367,7 +387,8 @@ static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, N
 static void stealth_hook(const char *obf_name, void *replacement, void **original) {
     char real_name[256];
     strncpy(real_name, obf_name, sizeof(real_name)-1);
-    obfuscate_str(real_name); // 反混淆
+    real_name[sizeof(real_name)-1] = '\0';
+    obfuscate_str(real_name);
     void *sym = dlsym(RTLD_DEFAULT, real_name);
     if (sym) {
         DobbyHook(sym, replacement, original);
@@ -431,7 +452,6 @@ static int is_dyld_hijacked(void) {
 }
 
 static int is_debugger_attached(void) {
-    // 使用 sysctl 检测，但已被 fishhook 清除 P_TRACED，所以永远返回0
     int name[4];
     struct kinfo_proc info;
     size_t info_size = sizeof(info);
@@ -444,7 +464,6 @@ static int is_debugger_attached(void) {
 }
 
 static int ptrace_deny_attach(void) {
-    // 已经被 fishhook 重写，始终返回0
     return (ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1);
 }
 
@@ -452,8 +471,10 @@ static int is_substrate_loaded(void) {
     uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; i++) {
         const char *name = _dyld_get_image_name(i);
+        if (!name) continue;
         char buf[256];
         strncpy(buf, name, sizeof(buf)-1);
+        buf[sizeof(buf)-1] = '\0';
         obfuscate_str(buf);
         if (strstr(buf, "ZbovyrFhofgengr") || strstr(buf, "Fhofgengr") || strstr(buf, "PlqvnFhofgengr"))
             return 1;
@@ -467,10 +488,11 @@ static int is_frida_installed(void) { return access("/usr/sbin/frida-server", F_
 static int is_debugserver_installed(void) { return access("/Developer/usr/bin/debugserver", F_OK) == 0; }
 
 static int check_provisioning(void) {
-    char *provisionPath = NULL;
     uint32_t size = 0;
     _NSGetExecutablePath(NULL, &size);
-    char execPath[size];
+    if (size == 0) return 0;
+    
+    char *execPath = (char *)malloc(size);
     _NSGetExecutablePath(execPath, &size);
     char *lastSlash = strrchr(execPath, '/');
     if (lastSlash) {
@@ -483,14 +505,16 @@ static int check_provisioning(void) {
             long len = ftell(fp);
             fseek(fp, 0, SEEK_SET);
             char *data = (char*)malloc(len + 1);
-            fread(data, 1, len, fp);
+            size_t read_bytes = fread(data, 1, len, fp);
             fclose(fp);
-            data[len] = '\0';
+            data[read_bytes] = '\0';
             int debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
             free(data);
+            free(execPath);
             return debuggable;
         }
     }
+    free(execPath);
     return 0;
 }
 
@@ -500,20 +524,16 @@ static int check_env(void) {
     return 0;
 }
 
+// Fix: تم استبدال الكود المعتمد على لينكس بكود متوافق رسمياً مع نظام iOS لجلب مسار الأب الآمن
 static int check_ppid(void) {
     pid_t ppid = getppid();
-    char path[256];
-    snprintf(path, sizeof(path), "/proc/%d/exe", ppid);
-    if (access(path, F_OK) == 0) {
-        char target[256];
-        ssize_t len = readlink(path, target, sizeof(target)-1);
-        if (len != -1) {
-            target[len] = '\0';
-            char buf[256];
-            strncpy(buf, target, sizeof(buf)-1);
-            obfuscate_str(buf);
-            if (strstr(buf, "qrohtfreire") || strstr(buf, "yyqo")) return 1;
-        }
+    char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
+    if (proc_pidpath(ppid, pathbuf, sizeof(pathbuf)) > 0) {
+        char buf[256];
+        strncpy(buf, pathbuf, sizeof(buf)-1);
+        buf[sizeof(buf)-1] = '\0';
+        obfuscate_str(buf);
+        if (strstr(buf, "qrohtfreire") || strstr(buf, "yyqo")) return 1;
     }
     return 0;
 }
@@ -522,7 +542,6 @@ static int is_frida_loaded(void) {
     return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL);
 }
 
-// 综合安全检查 (不再强行退出，只打印日志，因为 hook 已经保护)
 static void perform_security_checks(void) {
     int threat_level = 0;
     if (is_simulator()) threat_level += 10;
@@ -551,7 +570,6 @@ static void perform_security_checks(void) {
 // 主 Hook 函数 (由第二层 constructor 调用)
 // ============================================================================
 static void hook_all_functions(void) {
-    // 系统调用 (注意 ptrace 和 sysctl 已经被 fishhook 替换，但再 hook 一次也无妨)
     stealth_hook("cgenpr", (void*)my_ptrace_dobby, (void**)&orig_ptrace);
     stealth_hook("flfpby", (void*)my_sysctl_dobby, (void**)&orig_sysctl);
     stealth_hook("flfpbyolanzr", (void*)my_sysctlbyname, (void**)&orig_sysctlbyname);
@@ -589,7 +607,7 @@ static void hook_all_functions(void) {
     stealth_hook("FFY_PGK_purpx_cevingr_xrl", (void*)my_SSL_CTX_check_private_key, (void**)&orig_SSL_CTX_check_private_key);
     stealth_hook("FFY_PGK_ybnq_irevsl_ybpngvbaf", (void*)my_SSL_CTX_load_verify_locations, (void**)&orig_SSL_CTX_load_verify_locations);
 
-    // Jailbreak 检测函数
+    // Jailbreak الدوال
     const char *jb_funcs[] = {"vf_wo", "EBBGRQ", "QRHTTRE_NGGNPURQ", "vfQrhttreNggnpurq", "purpxWnvyoernx", "unfPlqvn", "vfWnvyoernx", "nzVOrvatQrhttrq"};
     void *jb_repl[] = {(void*)my_is_jb, (void*)my_ROOTED, (void*)my_DEBUGGER_ATTACHED, (void*)my_isDebuggerAttached,
                        (void*)my_checkJailbreak, (void*)my_hasCydia, (void*)my_isJailbroken_c, (void*)my_amIBeingDebugged};
@@ -599,6 +617,7 @@ static void hook_all_functions(void) {
     for (int i = 0; i < 8; i++) {
         char real_name[256];
         strncpy(real_name, jb_funcs[i], sizeof(real_name)-1);
+        real_name[sizeof(real_name)-1] = '\0';
         obfuscate_str(real_name);
         void *sym = dlsym(RTLD_DEFAULT, real_name);
         if (sym) DobbyHook(sym, jb_repl[i], jb_orig[i]);
@@ -637,15 +656,7 @@ static void hook_all_functions(void) {
 // ============================================================================
 __attribute__((constructor(102)))
 static void initialize_dobby_hooks(void) {
-    // 短暂延迟确保 fishhook 完全生效
-    usleep(50000); // 50ms
+    usleep(50000); // تأخير بسيط 50 ملي ثانية لضمان استقرار fishhook
     perform_security_checks();
     hook_all_functions();
-    // 可选的 printf hook（如果愿意）
-    // void *printf_addr = DobbySymbolResolver(NULL, "printf");
-    // if (printf_addr) DobbyHook(printf_addr, (void *)my_printf, (void **)&orig_printf);
 }
-
-// ============================================================================
-// 结束
-// ============================================================================
