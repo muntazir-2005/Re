@@ -4,7 +4,6 @@ SDK = $(shell xcrun -sdk iphoneos --show-sdk-path)
 CFLAGS = -arch arm64 -isysroot $(SDK) -miphoneos-version-min=12.0 -fobjc-arc -O2
 LDFLAGS = -dynamiclib -install_name @executable_path/ANOGS.dylib
 FRAMEWORKS = -framework Foundation -framework UIKit -framework LocalAuthentication -framework Security
-LIBS = -lssl -lcrypto
 
 SRC = ANOGS.mm fishhook.c
 OBJ = $(SRC:.c=.o)
@@ -13,7 +12,7 @@ OBJ := $(OBJ:.mm=.o)
 all: ANOGS.dylib
 
 ANOGS.dylib: $(OBJ)
-	$(CC) $(ARCHS) $(LDFLAGS) -o $@ $^ $(FRAMEWORKS) $(LIBS)
+	$(CC) $(ARCHS) $(LDFLAGS) -o $@ $^ $(FRAMEWORKS)
 
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
