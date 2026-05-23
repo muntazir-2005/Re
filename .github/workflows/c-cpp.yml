@@ -15,7 +15,7 @@ jobs:
 
       - name: Setup Theos
         run: |
-          export THEOS=/opt/theos
+          export THEOS=$HOME/theos
           echo "THEOS=$THEOS" >> $GITHUB_ENV
           git clone --recursive https://github.com/theos/theos.git $THEOS
 
