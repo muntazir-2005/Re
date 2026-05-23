@@ -1,70 +1,23 @@
-name: iOS Theos Build (Perfect Fix)
+name: Build ANOGS.dylib
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ main ]
   pull_request:
-    branches: [ "main", "master" ]
+    branches: [ main ]
 
 jobs:
   build:
     runs-on: macos-latest
 
     steps:
-    # 1. سحب كود المشروع الخاص بك
-    - name: Checkout Repository Code
-      uses: actions/checkout@v4
-      with:
-        submodules: recursive
+      - uses: actions/checkout@v3
 
-    # 2. إعداد وتحديد بيئة الـ Xcode المتاحة على الخادم
-    - name: Set up Xcode
-      run: |
-        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+      - name: Build dylib
+        run: make
 
-    # 3. تثبيت الأساس المصدري لـ Theos يدويًا (تجاوز سكريبت التثبيت الذكي المشكوك فيه)
-    - name: Install Pure Theos Base
-      run: |
-        # تحديد المسار البيئي لـ Theos وحفظه في خادم GitHub
-        export THEOS=/Users/runner/theos
-        echo "THEOS=$THEOS" >> $GITHUB_ENV
-        
-        # سحب مستودع الثيوس مباشرة عبر الـ Git بدون تشغيل الـ Setup التلقائي
-        git clone --recursive https://github.com/theos/theos.git $THEOS
-
-    # 4. تحميل حزمة الـ SDK لنظام iOS 16.5 أو أعلى مباشرة (تتوافق وتبني لـ iOS 18.5)
-    # هذا الأمر يتجاوز الـ API الخاص بـ GitHub تماماً ويتوجه للملف مباشرة
-    - name: Install iOS SDK Directly
-      run: |
-        mkdir -p $THEOS/sdks
-        
-        # تحميل الملف مباشرة وفك ضغطه داخل مجلد الـ SDKs في ثوانٍ معدودة
-        curl -LO https://github.com/theos/sdks/raw/master/iPhoneOS16.5.sdk.tar.xz
-        tar -xf iPhoneOS16.5.sdk.tar.xz -C $THEOS/sdks/
-        
-        # تنظيف الملف لتوفر المساحة في الخادم
-        rm iPhoneOS16.5.sdk.tar.xz
-
-    # 5. تجهيز الاعتمادات والمكتبات الخارجية (OpenSSL) ليتعرف عليها المترجم
-    - name: Install Dependencies
-      run: |
-        brew install openssl@3
-        mkdir -p ./include ./lib
-        ln -s /opt/homebrew/opt/openssl@3/include/* ./include/
-        ln -s /opt/homebrew/opt/openssl@3/lib/*.a ./lib/
-
-    # 6. تشغيل أمر بناء الحزمة (Compile)
-    - name: Compile Package via Theos
-      run: |
-        make package FINALPACKAGE=1
-
-    # 7. رفع الملف الناتج (.deb أو .dylib) إلى الـ Artifacts لتحميله
-    - name: Upload Built Binary Artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: ios-18-package
-        path: |
-          packages/*.deb
-          .theos/obj/debug/*.dylib
-          *.dylib
-        if-no-files-found: warn
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ANOGS.dylib
+          path: ANOGS.dylib
