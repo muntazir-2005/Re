@@ -1,97 +1,49 @@
-name: ANOGS-AI CI (Fishhook)
+name: iOS Hook Library Build
 
+# تحديد متى يتم تشغيل هذا الأكشن (عند الرفع أو طلب السحب على فرع main)
 on:
   push:
-    branches: [ "main" ]
-    tags: [ "v*" ]
-  workflow_dispatch:
+    branches: [ "main", "master" ]
+  pull_request:
+    branches: [ "main", "master" ]
 
 jobs:
   build:
+    # استخدام خادم macOS لأننا نحتاج لـ iOS SDK و Xcode Command Line Tools
     runs-on: macos-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+    # 1. سحب كود المشروع من جيت هب إلى الخادم
+    - name: Checkout Repository Code
+      uses: actions/checkout@v4
+      with:
+        submodules: recursive # لسحب مكتبات الطرف الثالث إذا كانت مضافة كـ submodules
 
-      - name: Setup Theos
-        run: |
-          brew install dpkg ldid
-          export THEOS=/opt/theos
-          echo "THEOS=$THEOS" >> $GITHUB_ENV
-          sudo mkdir -p $THEOS
-          sudo chown -R $USER:staff $THEOS
-          git clone --recursive https://github.com/theos/theos.git $THEOS --depth=1
+    # 2. إعداد وإظهار نسخة Xcode المستخدمة للتأكد من وجود الـ SDK
+    - name: Set up Xcode and iOS SDK
+      run: |
+        sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+        xcrun --sdk iphoneos --show-sdk-path
 
-      - name: Fix Dobby Modules Conflict (Safe Inline Code)
-        run: |
-          export THEOS=/opt/theos
-          DOBBY_HEADER="$THEOS/include/dobby/dobby.h"
-          
-          if [ -f "$DOBBY_HEADER" ]; then
-            echo "[*] Modifying dobby.h to prevent C++ Modules conflict..."
-            
-            # حيلة السطر الواحد باستخدام sed لتجنب أخطاء بنية الـ YAML (السطر 49)
-            # نقوم بحقن التضمينات القياسية قبل الـ extern "C" مباشرة لضمان تحميل الموديولات بأمان
-            sed -i '' 's/extern "C" {/#include <stdint.h>\n#include <sys\/types.h>\nextern "C" {/g' "$DOBBY_HEADER"
-            
-            echo "[+] dobby.h modified successfully!"
-          else
-            echo "[!] dobby.h not found in default path, skipping inline fix."
-          fi
+    # 3. تثبيت أو إعداد المكتبات الخارجية (OpenSSL كمثال عبر Homebrew)
+    # ملاحظة: إذا كانت مكتبات Dobby و fishhook مرفوعة معك في المشروع، سيقرأها الـ Makefile تلقائياً.
+    # هنا نقوم بتثبيت openssl للتأكد من توفر الملفات الرأسية (Headers)
+    - name: Install Dependencies via HomeBrew
+      run: |
+        brew install openssl@3
+        # إنشاء روابط رمزية (Symlinks) إذا كنت بحاجة لربطها بمسار مشروعك
+        mkdir -p ./openssl
+        ln -s /opt/homebrew/opt/openssl@3/include ./openssl/include
+        ln -s /opt/homebrew/opt/openssl@3/lib ./openssl/lib
 
-      - name: Build Tweak
-        run: |
-          export THEOS=/opt/theos
-          export PATH=$THEOS/bin:$PATH
-          make package FINALPACKAGE=1
+    # 4. تنفيذ أمر البناء باستخدام الـ Makefile الذي أنشأناه سابقاً
+    - name: Compile iOS dylib via Makefile
+      run: |
+        make
 
-      - name: Prepare Artifacts
-        run: |
-          mkdir -p output
-          if ls packages/*.deb 1> /dev/null 2>&1; then
-            cp packages/*.deb output/
-            DEB_FILE=$(ls packages/*.deb | head -1)
-            mkdir -p deb_extract
-            dpkg-deb -x "$DEB_FILE" deb_extract
-            find deb_extract -name "*.dylib" -exec cp {} output/ANOGS.dylib \;
-            rm -rf deb_extract
-          fi
-          ls -la output/
-
-      - name: Upload Artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: ANOGS-AI
-          path: output/
-
-  release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download Artifacts
-        uses: actions/download-artifact@v4
-        with:
-          name: ANOGS-AI
-          path: artifacts
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/*
-          name: "ANOGS-AI ${{ github.ref_name }}"
-          body: |
-            **ANOGS-AI** – إصدار مستقر ومحدث بالكامل ومتوافق مع جيل الحمايات الجديد.
-            
-            ### 📦 المحتويات:
-            - مكتبة `ANOGS.dylib` جاهزة للحقن المباشر.
-            - ملف التثبيت بصيغة `.deb`.
-            
-            ### 🚀 المميزات:
-            - متوافق تماماً مع تحديثات النظام الجديدة iOS 15 وحتى iOS 18.5.
-            - إصلاح أخطاء التجميع والـ YAML بنجاح.
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    # 5. حفظ الملف الناتج (.dylib) كـ Artifact لتحميله بعد انتهاء البناء
+    - name: Upload Built Binary Artifact
+      uses: actions/artifacts@v4
+      with:
+        name: ios-hook-library
+        path: final_hook.dylib # اسم الملف الناتج من الـ Makefile
