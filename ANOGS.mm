@@ -1,6 +1,6 @@
 //  ANOGS.mm
 //  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
-//  Corrected: no OpenSSL headers needed, no ptrace.h
+//  Corrected: no OpenSSL headers, no ptrace.h, fixed utsname & isJailbroken
 
 #import <stdio.h>
 #import <string.h>
@@ -8,6 +8,7 @@
 #import <stdlib.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
+#import <sys/utsname.h>          // <-- added for utsname
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
@@ -313,7 +314,7 @@ typedef struct interpose_s {
 static int my_printf(const char *format, ...);
 
 INTERPOSE(my_printf, printf)
-INTERPOSE(my_isJailbroken_c, isJailbroken)
+// INTERPOSE(my_isJailbroken_c, isJailbroken)  // removed – isJailbroken symbol missing
 
 static int my_printf(const char *format, ...) {
     if (strstr(format, "debug") || strstr(format, "jailbreak")) {
