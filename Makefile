@@ -1,24 +1,14 @@
-CC = xcrun -sdk iphoneos clang
-ARCHS = arm64
-SDK = $(shell xcrun -sdk iphoneos --show-sdk-path)
-CFLAGS = -arch $(ARCHS) -isysroot $(SDK) -miphoneos-version-min=12.0 -fobjc-arc -O2
-LDFLAGS = -dynamiclib -install_name @executable_path/ANOGS.dylib -lc++
-FRAMEWORKS = -framework Foundation -framework UIKit -framework LocalAuthentication -framework Security
+# Theos Makefile for ANOGS.dylib
+TARGET := iphone:clang:latest:12.0
+include $(THEOS)/makefiles/common.mk
 
-SRC = ANOGS.mm fishhook.c
-OBJ = $(SRC:.c=.o)
-OBJ := $(OBJ:.mm=.o)
+LIBRARY_NAME = ANOGS
+ANOGS_TYPE = dylib
+ANOGS_INSTALL_PATH = @executable_path
 
-all: ANOGS.dylib
+ANOGS_FILES = ANOGS.mm fishhook.c
+ANOGS_FRAMEWORKS = Foundation UIKit LocalAuthentication Security
+ANOGS_LIBRARIES = c++   # important for C++ symbols
+ANOGS_CFLAGS = -fobjc-arc
 
-ANOGS.dylib: $(OBJ)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(FRAMEWORKS)
-
-%.o: %.c
-	$(CC) $(CFLAGS) -c $< -o $@
-
-%.o: %.mm
-	$(CC) $(CFLAGS) -x objective-c++ -c $< -o $@
-
-clean:
-	rm -f $(OBJ) ANOGS.dylib
+include $(THEOS_MAKE_PATH)/library.mk
