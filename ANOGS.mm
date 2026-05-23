@@ -27,11 +27,6 @@ extern "C" int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 #include <CommonCrypto/CommonCryptor.h>
 #include <Security/Security.h>
 #include <Security/SecKey.h>
-#include <openssl/rsa.h>
-#include <openssl/x509.h>
-#include <openssl/evp.h>
-#include <openssl/pem.h>
-#include <openssl/ssl.h>
 #include <time.h>
 #include <pthread.h>
 #include <objc/runtime.h>
@@ -143,16 +138,16 @@ static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algo
 // CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
 
-// OpenSSL
-static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
-static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
-static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
-static int (*orig_X509_verify_cert)(X509_STORE_CTX *ctx);
-static int (*orig_X509_check_private_key)(X509 *x509, EVP_PKEY *pkey);
-static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u);
-static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, int type);
-static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
-static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
+// OpenSSL Hooks (تم تحويل الأنواع المفقودة لـ void* لمنع أخطاء الـ Headers)
+static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, void *rsa);
+static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, void *rsa);
+static int (*orig_EVP_PKEY_verify)(void *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
+static int (*orig_X509_verify_cert)(void *ctx);
+static int (*orig_X509_check_private_key)(void *x509, void *pkey);
+static void* (*orig_PEM_read_bio_PrivateKey)(void *bp, void **x, void *cb, void *u);
+static int (*orig_SSL_CTX_use_PrivateKey_file)(void *ctx, const char *file, int type);
+static int (*orig_SSL_CTX_check_private_key)(void *ctx);
+static int (*orig_SSL_CTX_load_verify_locations)(void *ctx, const char *CAfile, const char *CApath);
 
 // Jailbreak / Debug 检测 C 函数
 static bool (*orig_is_jb)(void);
@@ -306,39 +301,40 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return kCCSuccess;
 }
 
-static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) {
+// OpenSSL Implementations (معدلة بدون استخدام أنواع OpenSSL Structs)
+static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, void *rsa) {
     junk_code();
     return 1;
 }
-static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
+static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, void *rsa) {
     junk_code();
     return 1;
 }
-static int my_EVP_PKEY_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) {
+static int my_EVP_PKEY_verify(void *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) {
     junk_code();
     return 1;
 }
-static int my_X509_verify_cert(X509_STORE_CTX *ctx) {
+static int my_X509_verify_cert(void *ctx) {
     junk_code();
     return 1;
 }
-static int my_X509_check_private_key(X509 *x509, EVP_PKEY *pkey) {
+static int my_X509_check_private_key(void *x509, void *pkey) {
     junk_code();
     return 1;
 }
-static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u) {
+static void* my_PEM_read_bio_PrivateKey(void *bp, void **x, void *cb, void *u) {
     junk_code();
     return NULL;
 }
-static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type) {
+static int my_SSL_CTX_use_PrivateKey_file(void *ctx, const char *file, int type) {
     junk_code();
     return 1;
 }
-static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) {
+static int my_SSL_CTX_check_private_key(void *ctx) {
     junk_code();
     return 1;
 }
-static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) {
+static int my_SSL_CTX_load_verify_locations(void *ctx, const char *CAfile, const char *CApath) {
     junk_code();
     return 1;
 }
@@ -507,7 +503,6 @@ static int check_env(void) {
     return 0;
 }
 
-// تم تعديلها وحل مشكلتها هنا دون الاعتماد على الملف الخارجي
 static int check_ppid(void) {
     pid_t ppid = getppid();
     char pathbuf[4096];
