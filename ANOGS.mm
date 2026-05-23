@@ -1,7 +1,6 @@
 // ============================================================================
-// 完整稳定版反反调试/反越狱 Hook 库 (نسخة معدلة ومستقرة بدون كراش)
+// 完整稳定版反反调试/反越狱 Hook 库 (نسخة معدلة ومستقرة بدون كراش وبدون أخطاء تجميع)
 // 基于 fishhook (安全层) + Dobby (功能层) 双重保障，无崩溃，无需越狱
-// 编译方式: clang++ -dynamiclib -o final_hook.dylib final_hook.mm -framework Foundation -framework Security -framework LocalAuthentication -framework UIKit -I/path/to/dobby/include -L/path/to/dobby/lib -ldobby -lfishhook -framework CoreFoundation -framework CommonCrypto -lssl -lcrypto
 // ============================================================================
 
 #include <stdio.h>
@@ -10,12 +9,14 @@
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
-#include <sys/sysctl.h> // تم إضافته لدعم CTL_KERN و KERN_PROC
-#include <libproc.h>    // تم إضافته لدعم جلب مسار العمليات البديل لـ procfs
+#include <sys/sysctl.h> 
 
 // تعريف يدوي لدالة ptrace والثوابت المطلوبة (غير موجودة في iOS SDK)
 #define PT_DENY_ATTACH 31
 extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
+
+// تعريف يدوي لدالة proc_pidpath لتجنب خطأ missing libproc.h
+extern "C" int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
@@ -68,7 +69,6 @@ static inline void junk_code(void) {
     (void)c;
 }
 
-// 对声明进行前置声明，防止 dlsym Hook 找不到符号
 static int my_ptrace_dobby(int request, pid_t pid, caddr_t addr, int data);
 static int my_sysctl_dobby(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn);
@@ -77,18 +77,15 @@ static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_s
 // ============================================================================
 // 第一层：鱼钩安全层 —— 在应用任何 Dobby Hook 之前，先强制禁用危险系统调用
 // ============================================================================
-
-// ptrace 替换
 static int (*orig_ptrace_safe)(int request, pid_t pid, caddr_t addr, int data);
 static int my_ptrace_safe(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) {
-        return 0; // 完全忽略 PT_DENY_ATTACH，防止应用自杀
+        return 0; 
     }
     if (orig_ptrace_safe) return orig_ptrace_safe(request, pid, addr, data);
     return 0;
 }
 
-// sysctl 替换 (清除 P_TRACED 标志)
 static int (*orig_sysctl_safe)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int my_sysctl_safe(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     int ret = orig_sysctl_safe ? orig_sysctl_safe(name, namelen, oldp, oldlenp, newp, newlen) : 0;
@@ -99,7 +96,6 @@ static int my_sysctl_safe(int *name, u_int namelen, void *oldp, size_t *oldlenp,
     return ret;
 }
 
-// 最高优先级的 constructor，在 dyld 加载库时立即执行，确保所有安全 Hook 最先生效
 __attribute__((constructor(101)))
 static void initialize_fishhook_safety(void) {
     static int initialized = 0;
@@ -118,7 +114,7 @@ static void initialize_fishhook_safety(void) {
 }
 
 // ============================================================================
-// 原函数指针 (完整列表，供 Dobby 层使用)
+// 原函数指针
 // ============================================================================
 static int (*orig_printf)(const char *format, ...);
 static int (*orig_ptrace)(int request, pid_t pid, caddr_t addr, int data);
@@ -221,7 +217,6 @@ static void* my_dlsym(void *handle, const char *symbol) {
     buf[sizeof(buf)-1] = '\0';
     obfuscate_str(buf);
     
-    // بدلاً من إرجاع NULL مسبب للكراش، نقوم بإرجاع الدوال البديلة التابعة لنا لحماية التطبيق
     if (strcmp(buf, "cgenpr") == 0) return (void*)my_ptrace_dobby;
     if (strcmp(buf, "flfpby") == 0) return (void*)my_sysctl_dobby;
     if (strcmp(buf, "gnfx_sbe_cvq") == 0) return (void*)my_task_for_pid;
@@ -255,7 +250,6 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain Hooks (تم تعديلها لتمرير البيانات الأصلية منعاً للكراش وضياع التوكنز)
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     junk_code();
     if (orig_SecItemCopyMatching) return orig_SecItemCopyMatching(query, result);
@@ -300,7 +294,6 @@ static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm
     return true;
 }
 
-// CCCrypt Fix: تم الإصلاح لتمرير دالة التشفير الأصلية حتى لا ينقطع اتصال الشبكة والـ HTTPS داخل التطبيق
 static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved) {
     junk_code();
     if (orig_CCCrypt) {
@@ -313,7 +306,6 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return kCCSuccess;
 }
 
-// OpenSSL 替换 (总是返回成功)
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) {
     junk_code();
     return 1;
@@ -351,7 +343,6 @@ static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, co
     return 1;
 }
 
-// Jailbreak / Debug 检测函数替换
 static bool my_is_jb(void) { junk_code(); return false; }
 static bool my_ROOTED(void) { junk_code(); return false; }
 static bool my_DEBUGGER_ATTACHED(void) { junk_code(); return false; }
@@ -361,13 +352,11 @@ static bool my_hasCydia(void) { junk_code(); return false; }
 static bool my_isJailbroken_c(void) { junk_code(); return false; }
 static bool my_amIBeingDebugged(void) { junk_code(); return false; }
 
-// Obj-C 替换
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     junk_code();
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
 
-// LAContext Fix: تم إضافة معامل localizedReason المفقود لمنع الانهيار (Crash) عند طلب البصمة
 static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSString *localizedReason, id reply) {
     junk_code();
     void (^replyBlock)(BOOL success, NSError *error) = reply;
@@ -381,9 +370,6 @@ static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, N
     return YES;
 }
 
-// ============================================================================
-// 通用 Hook 辅助: 先找符号，再用 DobbyHook
-// ============================================================================
 static void stealth_hook(const char *obf_name, void *replacement, void **original) {
     char real_name[256];
     strncpy(real_name, obf_name, sizeof(real_name)-1);
@@ -395,9 +381,6 @@ static void stealth_hook(const char *obf_name, void *replacement, void **origina
     }
 }
 
-// ============================================================================
-// 环境检测函数 (安全版本，因为 ptrace/sysctl 已经被 fishhook 保护)
-// ============================================================================
 static int is_simulator(void) {
     junk_code();
 #if TARGET_IPHONE_SIMULATOR
@@ -524,10 +507,10 @@ static int check_env(void) {
     return 0;
 }
 
-// Fix: تم استبدال الكود المعتمد على لينكس بكود متوافق رسمياً مع نظام iOS لجلب مسار الأب الآمن
+// تم تعديلها وحل مشكلتها هنا دون الاعتماد على الملف الخارجي
 static int check_ppid(void) {
     pid_t ppid = getppid();
-    char pathbuf[PROC_PIDPATHINFO_MAXSIZE];
+    char pathbuf[4096];
     if (proc_pidpath(ppid, pathbuf, sizeof(pathbuf)) > 0) {
         char buf[256];
         strncpy(buf, pathbuf, sizeof(buf)-1);
@@ -566,9 +549,6 @@ static void perform_security_checks(void) {
     }
 }
 
-// ============================================================================
-// 主 Hook 函数 (由第二层 constructor 调用)
-// ============================================================================
 static void hook_all_functions(void) {
     stealth_hook("cgenpr", (void*)my_ptrace_dobby, (void**)&orig_ptrace);
     stealth_hook("flfpby", (void*)my_sysctl_dobby, (void**)&orig_sysctl);
@@ -599,15 +579,14 @@ static void hook_all_functions(void) {
     // OpenSSL
     stealth_hook("ENF_irevsl", (void*)my_RSA_verify, (void**)&orig_RSA_verify);
     stealth_hook("ENF_fvta", (void*)my_RSA_sign, (void**)&orig_RSA_sign);
-    stealth_hook("RUC_XRL_irevsl", (void*)my_EVP_PKEY_verify, (void**)&orig_EVP_PKEY_verify);
+    stealth_hook("EUC_XRL_irevsl", (void*)my_EVP_PKEY_verify, (void**)&orig_EVP_PKEY_verify);
     stealth_hook("K509_irevsl_preg", (void*)my_X509_verify_cert, (void**)&orig_X509_verify_cert);
     stealth_hook("K509_purpx_cevingr_xrl", (void*)my_X509_check_private_key, (void**)&orig_X509_check_private_key);
     stealth_hook("CRZ_ernq_ovb_CevngrXrl", (void*)my_PEM_read_bio_PrivateKey, (void**)&orig_PEM_read_bio_PrivateKey);
-    stealth_hook("FFY_PGK_hfr_CevngrXrl_svyr", (void*)my_SSL_CTX_use_PrivateKey_file, (void**)&orig_SSL_CTX_use_PrivateKey_file);
-    stealth_hook("FFY_PGK_purpx_cevingr_xrl", (void*)my_SSL_CTX_check_private_key, (void**)&orig_SSL_CTX_check_private_key);
-    stealth_hook("FFY_PGK_ybnq_irevsl_ybpngvbaf", (void*)my_SSL_CTX_load_verify_locations, (void**)&orig_SSL_CTX_load_verify_locations);
+    stealth_hook("FFY_PGX_hfr_CevngrXrl_svyr", (void*)my_SSL_CTX_use_PrivateKey_file, (void**)&orig_SSL_CTX_use_PrivateKey_file);
+    stealth_hook("FFY_PGX_purpx_cevingr_xrl", (void*)my_SSL_CTX_check_private_key, (void**)&orig_SSL_CTX_check_private_key);
+    stealth_hook("FFY_PGX_ybnq_irevsl_ybpngvbaf", (void*)my_SSL_CTX_load_verify_locations, (void**)&orig_SSL_CTX_load_verify_locations);
 
-    // Jailbreak الدوال
     const char *jb_funcs[] = {"vf_wo", "EBBGRQ", "QRHTTRE_NGGNPURQ", "vfQrhttreNggnpurq", "purpxWnvyoernx", "unfPlqvn", "vfWnvyoernx", "nzVOrvatQrhttrq"};
     void *jb_repl[] = {(void*)my_is_jb, (void*)my_ROOTED, (void*)my_DEBUGGER_ATTACHED, (void*)my_isDebuggerAttached,
                        (void*)my_checkJailbreak, (void*)my_hasCydia, (void*)my_isJailbroken_c, (void*)my_amIBeingDebugged};
@@ -651,12 +630,9 @@ static void hook_all_functions(void) {
     }
 }
 
-// ============================================================================
-// 第二层 Constructor: Dobby 层初始化，确保安全层已经稳定运行
-// ============================================================================
 __attribute__((constructor(102)))
 static void initialize_dobby_hooks(void) {
-    usleep(50000); // تأخير بسيط 50 ملي ثانية لضمان استقرار fishhook
+    usleep(50000); 
     perform_security_checks();
     hook_all_functions();
 }
