@@ -22,37 +22,49 @@ jobs:
       run: |
         sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-    # 3. تثبيت أحدث بيئة لـ Theos والـ SDKs تلقائياً
+    # 3. تثبيت أحدث بيئة لـ Theos (مع تجاوز الفحص التلقائي للـ SDK)
     - name: Install Theos Environment
       run: |
-        # تحميل وتثبيت Theos في المسار الافتراضي
-        bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+        # تعيين مسار البيئة لـ Theos
+        export THEOS=/Users/runner/theos
+        echo "THEOS=$THEOS" >> $GITHUB_ENV
         
-        # تحميل أحدث الـ SDKs المطلوبة للبناء (iOS 14+ أو أحدث) لضمان عدم فشل المترجم
-        git clone https://github.com/theos/sdks.git $THEOS/sdks
+        # تحميل الأداة مع إيقاف ميزة التثبيت التلقائي للـ SDK لتفادي الخطأ
+        bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)" -- --no-sdks
 
-    # 4. تثبيت الاعتمادات الخارجية مثل OpenSSL إذا كان كودك يستدعيها
+    # 4. تثبيت الـ SDK يدوياً وبسرعة فائقة (تجاوز خطأ الـ API)
+    - name: Install iOS SDK Manually
+      run: |
+        # إنشاء مجلد الـ SDKs داخل Theos
+        mkdir -p $THEOS/sdks
+        
+        # تحميل الحزمة المخصصة لـ iOS 14.5 بشكل مباشر (أكثر النسخ استقراراً مع التويكات)
+        curl -LO https://github.com/theos/sdks/raw/master/iPhoneOS14.5.sdk.tar.xz
+        
+        # فك الضغط ونقل الملف للمسار الصحيح
+        tar -xf iPhoneOS14.5.sdk.tar.xz -C $THEOS/sdks/
+        
+        # تنظيف الملف المضغوط لتوفير المساحة
+        rm iPhoneOS14.5.sdk.tar.xz
+
+    # 5. تثبيت الاعتمادات الخارجية مثل OpenSSL
     - name: Install Dependencies
       run: |
         brew install openssl@3
-        # عمل روابط مخصصة لـ Theos ليجد OpenSSL أثناء البناء
         mkdir -p ./include ./lib
         ln -s /opt/homebrew/opt/openssl@3/include/* ./include/
         ln -s /opt/homebrew/opt/openssl@3/lib/*.a ./lib/
 
-    # 5. تشغيل أمر البناء الخاص بـ Theos
+    # 6. تشغيل أمر البناء الخاص بـ Theos
     - name: Compile Tweak / Library via Theos
       run: |
-        # تفعيل متغيرات البيئة لـ Theos وتشغيل البناء للنسخة النهائية (Release)
-        export THEOS=/Users/runner/theos
         make package FINALPACKAGE=1
 
-    # 6. تصحيح الخطأ: رفع الملفات الناتجة باستخدام الأكشن الصحيح الرسمي
+    # 7. رفع الملفات الناتجة (.deb أو .dylib)
     - name: Upload Built Binary Artifact
       uses: actions/upload-artifact@v4
       with:
         name: ios-theos-package
-        # سيقوم الأكشن بالبحث عن مجلد packages الذي ينشئه Theos تلقائياً ويرفع ملف الـ .deb أو الـ .dylib المتواجد بداخله
         path: |
           packages/*.deb
           .theos/obj/debug/*.dylib
