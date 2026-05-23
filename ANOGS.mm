@@ -1,6 +1,6 @@
 //  ANOGS.mm
 //  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
-//  Corrected: ptrace via dlsym instead of <sys/ptrace.h>
+//  Corrected: no OpenSSL headers needed, no ptrace.h
 
 #import <stdio.h>
 #import <string.h>
@@ -17,11 +17,6 @@
 #import <CommonCrypto/CommonCryptor.h>
 #import <Security/Security.h>
 #import <Security/SecKey.h>
-#import <openssl/rsa.h>
-#import <openssl/x509.h>
-#import <openssl/evp.h>
-#import <openssl/pem.h>
-#import <openssl/ssl.h>
 #import <time.h>
 
 #if TARGET_OS_IPHONE
@@ -32,22 +27,28 @@
 
 #include "fishhook.h"
 
-// ptrace ثابت – غير موجود في iOS SDK الحديث
+// ptrace – not available in iOS SDK, use dynamic lookup
 #define PT_DENY_ATTACH 31
-
-// مؤشر ديناميكي للدالة الأصلية ptrace
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
-
-// دالة مساعدة لتحميل ptrace مرة واحدة
 static void load_real_ptrace(void) {
     if (!real_ptrace) {
         real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
     }
 }
 
+// Forward declarations for OpenSSL types (no headers needed)
+typedef struct rsa_st RSA;
+typedef struct evp_pkey_st EVP_PKEY;
+typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
+typedef struct x509_st X509;
+typedef struct X509_store_ctx_st X509_STORE_CTX;
+typedef struct ssl_ctx_st SSL_CTX;
+typedef struct bio_st BIO;
+typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
+
 // ============================================================================
-// Original function pointers (عدا ptrace التي نتعامل معها يدوياً)
+// Original function pointers
 // ============================================================================
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
@@ -71,10 +72,10 @@ static SecKeyRef (*orig_SecKeyCopyPublicKey)(SecKeyRef key);
 static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error);
 static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error);
 
-// AES / CommonCrypto
+// CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
 
-// OpenSSL RSA
+// OpenSSL (hooked via fishhook, no direct calls)
 static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
 static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
 static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
@@ -181,7 +182,7 @@ static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm
     return true;
 }
 
-// CommonCrypto (fixed buffer overflow)
+// CommonCrypto
 static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options,
                                   const void *key, size_t keyLength, const void *iv,
                                   const void *dataIn, size_t dataInLength,
@@ -194,11 +195,11 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// OpenSSL
+// OpenSSL (minimal replacements)
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
 static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     if (sig_len) *sig_len = 0;
-    return 0;  // properly indicate failure
+    return 0;
 }
 static int my_EVP_PKEY_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) { return 1; }
 static int my_X509_verify_cert(X509_STORE_CTX *ctx) { return 1; }
@@ -219,7 +220,7 @@ static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
 // ============================================================================
-// Objective‑C replacement methods
+// Objective-C swizzling
 // ============================================================================
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
@@ -236,8 +237,33 @@ static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, N
     return YES;
 }
 
+void swizzle_objc_methods() {
+    Class deviceCls = objc_getClass("UIDevice");
+    if (deviceCls) {
+        SEL sel = @selector(identifierForVendor);
+        Method m = class_getInstanceMethod(deviceCls, sel);
+        if (m) {
+            orig_UIDevice_identifierForVendor = method_getImplementation(m);
+            method_setImplementation(m, (IMP)my_UIDevice_identifierForVendor);
+        }
+    }
+    Class laContextCls = objc_getClass("LAContext");
+    if (laContextCls) {
+        SEL sel1 = @selector(evaluatePolicy:localizedReason:reply:);
+        Method m1 = class_getInstanceMethod(laContextCls, sel1);
+        if (m1) {
+            method_setImplementation(m1, (IMP)my_LAContext_evaluatePolicy);
+        }
+        SEL sel2 = @selector(canEvaluatePolicy:error:);
+        Method m2 = class_getInstanceMethod(laContextCls, sel2);
+        if (m2) {
+            method_setImplementation(m2, (IMP)my_LAContext_canEvaluatePolicy);
+        }
+    }
+}
+
 // ============================================================================
-// fishhook bindings (ptrace removed, handled dynamically)
+// fishhook
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
@@ -284,10 +310,10 @@ typedef struct interpose_s {
     __attribute__((used)) static const interpose_t interpose_##new \
     __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
 
-static int my_printf(const char *format, ...);   // forward
+static int my_printf(const char *format, ...);
 
 INTERPOSE(my_printf, printf)
-INTERPOSE(my_isJailbroken_c, isJailbroken)  // تأكد من وجود الرمز isJailbroken
+INTERPOSE(my_isJailbroken_c, isJailbroken)
 
 static int my_printf(const char *format, ...) {
     if (strstr(format, "debug") || strstr(format, "jailbreak")) {
@@ -301,35 +327,7 @@ static int my_printf(const char *format, ...) {
 }
 
 // ============================================================================
-// Method Swizzling
-// ============================================================================
-void swizzle_objc_methods() {
-    Class deviceCls = objc_getClass("UIDevice");
-    if (deviceCls) {
-        SEL sel = @selector(identifierForVendor);
-        Method m = class_getInstanceMethod(deviceCls, sel);
-        if (m) {
-            orig_UIDevice_identifierForVendor = method_getImplementation(m);
-            method_setImplementation(m, (IMP)my_UIDevice_identifierForVendor);
-        }
-    }
-    Class laContextCls = objc_getClass("LAContext");
-    if (laContextCls) {
-        SEL sel1 = @selector(evaluatePolicy:localizedReason:reply:);
-        Method m1 = class_getInstanceMethod(laContextCls, sel1);
-        if (m1) {
-            method_setImplementation(m1, (IMP)my_LAContext_evaluatePolicy);
-        }
-        SEL sel2 = @selector(canEvaluatePolicy:error:);
-        Method m2 = class_getInstanceMethod(laContextCls, sel2);
-        if (m2) {
-            method_setImplementation(m2, (IMP)my_LAContext_canEvaluatePolicy);
-        }
-    }
-}
-
-// ============================================================================
-// Environment checks (باستخدام المؤشر الديناميكي لـ ptrace عند الحاجة)
+// Environment checks
 // ============================================================================
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
@@ -402,7 +400,7 @@ int is_debugger_attached() {
 
 int ptrace_deny_attach() {
     load_real_ptrace();
-    if (!real_ptrace) return 1;  // إذا لم توجد ptrace نعتبرها بيئة مشبوهة
+    if (!real_ptrace) return 1;
     return (real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1) ? 1 : 0;
 }
 
@@ -504,7 +502,7 @@ void perform_security_checks() {
 __attribute__((constructor))
 void init_hook() {
     srand((unsigned int)time(NULL));
-    load_real_ptrace();               // تحميل ptrace الحقيقية قبل أي شيء
+    load_real_ptrace();
     perform_security_checks();
     fishhook_bindings();
     swizzle_objc_methods();
