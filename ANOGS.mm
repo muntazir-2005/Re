@@ -1,6 +1,6 @@
 //  ANOGS.mm
 //  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
-//  All security checks and fake/hook functions preserved, corrected.
+//  Corrected: ptrace via dlsym instead of <sys/ptrace.h>
 
 #import <stdio.h>
 #import <string.h>
@@ -8,7 +8,6 @@
 #import <stdlib.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
-#import <sys/ptrace.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
@@ -33,10 +32,23 @@
 
 #include "fishhook.h"
 
+// ptrace ثابت – غير موجود في iOS SDK الحديث
+#define PT_DENY_ATTACH 31
+
+// مؤشر ديناميكي للدالة الأصلية ptrace
+typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
+static ptrace_ptr_t real_ptrace = NULL;
+
+// دالة مساعدة لتحميل ptrace مرة واحدة
+static void load_real_ptrace(void) {
+    if (!real_ptrace) {
+        real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
+    }
+}
+
 // ============================================================================
-// Original function pointers (C functions)
+// Original function pointers (عدا ptrace التي نتعامل معها يدوياً)
 // ============================================================================
-static int (*orig_ptrace)(int request, pid_t pid, caddr_t addr, int data);
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static void* (*orig_dlopen)(const char *path, int mode);
@@ -88,7 +100,8 @@ static bool (*orig_amIBeingDebugged)(void);
 // ============================================================================
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
-    return orig_ptrace ? orig_ptrace(request, pid, addr, data) : 0;
+    load_real_ptrace();
+    return real_ptrace ? real_ptrace(request, pid, addr, data) : 0;
 }
 
 static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
@@ -213,7 +226,6 @@ static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
 
-// Fixed: added missing localizedReason parameter
 static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy,
                                         NSString *localizedReason,
                                         void(^reply)(BOOL success, NSError *error)) {
@@ -225,11 +237,10 @@ static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, N
 }
 
 // ============================================================================
-// fishhook bindings
+// fishhook bindings (ptrace removed, handled dynamically)
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
-        {"ptrace", (void *)my_ptrace, (void **)&orig_ptrace},
         {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
         {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
         {"dlopen", (void *)my_dlopen, (void **)&orig_dlopen},
@@ -273,11 +284,10 @@ typedef struct interpose_s {
     __attribute__((used)) static const interpose_t interpose_##new \
     __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
 
-// Forward declaration to avoid undeclared symbol
-static int my_printf(const char *format, ...);
+static int my_printf(const char *format, ...);   // forward
 
 INTERPOSE(my_printf, printf)
-INTERPOSE(my_isJailbroken_c, isJailbroken)  // ensure isJailbroken symbol exists
+INTERPOSE(my_isJailbroken_c, isJailbroken)  // تأكد من وجود الرمز isJailbroken
 
 static int my_printf(const char *format, ...) {
     if (strstr(format, "debug") || strstr(format, "jailbreak")) {
@@ -294,7 +304,6 @@ static int my_printf(const char *format, ...) {
 // Method Swizzling
 // ============================================================================
 void swizzle_objc_methods() {
-    // UIDevice identifierForVendor
     Class deviceCls = objc_getClass("UIDevice");
     if (deviceCls) {
         SEL sel = @selector(identifierForVendor);
@@ -304,7 +313,6 @@ void swizzle_objc_methods() {
             method_setImplementation(m, (IMP)my_UIDevice_identifierForVendor);
         }
     }
-    // LAContext
     Class laContextCls = objc_getClass("LAContext");
     if (laContextCls) {
         SEL sel1 = @selector(evaluatePolicy:localizedReason:reply:);
@@ -321,7 +329,7 @@ void swizzle_objc_methods() {
 }
 
 // ============================================================================
-// Environment checks (unchanged, only to detect threats)
+// Environment checks (باستخدام المؤشر الديناميكي لـ ptrace عند الحاجة)
 // ============================================================================
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
@@ -393,8 +401,9 @@ int is_debugger_attached() {
 }
 
 int ptrace_deny_attach() {
-    if (ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1) return 1;
-    return 0;
+    load_real_ptrace();
+    if (!real_ptrace) return 1;  // إذا لم توجد ptrace نعتبرها بيئة مشبوهة
+    return (real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1) ? 1 : 0;
 }
 
 int is_substrate_loaded() {
@@ -466,7 +475,6 @@ int is_frida_loaded() {
     return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL);
 }
 
-// Combined threat check
 void perform_security_checks() {
     int threat_level = 0;
     if (is_simulator()) threat_level += 10;
@@ -496,6 +504,7 @@ void perform_security_checks() {
 __attribute__((constructor))
 void init_hook() {
     srand((unsigned int)time(NULL));
+    load_real_ptrace();               // تحميل ptrace الحقيقية قبل أي شيء
     perform_security_checks();
     fishhook_bindings();
     swizzle_objc_methods();
