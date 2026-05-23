@@ -1,12 +1,11 @@
 # ============================================================================
-# Makefile متوافق مع Theos لـ tweak ANOGS
-# يعتمد على مكتبات fishhook و Dobby و OpenSSL
+# Makefile متوافق مع Theos لـ tweak ANOGS (نسخة مصلحة ومحسنة)
 # ============================================================================
 
 export TARGET = iphone:clang:latest:15.0
 ARCHS = arm64 arm64e
 
-# اسم الملف التنفيذي للعبة أو التطبيق المستهدف (غيّره حسب الحاجة)
+# اسم الملف التنفيذي للتطبيق أو اللعبة المستهدفة
 INSTALL_TARGET_PROCESSES = YourGameExecutable
 
 include $(THEOS)/makefiles/common.mk
@@ -14,29 +13,23 @@ include $(THEOS)/makefiles/common.mk
 TWEAK_NAME = ANOGS
 
 # الملفات المصدرية الأساسية
-# ANOGS.mm هو الكود المتكامل الذي يضم جميع الهوكات وطبقات الحماية
-# fishhook.c مطلوب لاستخدام fishhook (إن لم يكن متوفراً ضمن مكتبة منفصلة)
+# نقوم بتضمين fishhook.c مباشرة هنا ليتم تجميعه مع المشروع دون الحاجة لمكتبة خارجية
 ANOGS_FILES = ANOGS.mm fishhook.c
 
-# إطارات العمل (Frameworks) المطلوبة
+# إطارات العمل (Frameworks) المطلوبة من النظام
 ANOGS_FRAMEWORKS = UIKit Security LocalAuthentication CoreFoundation Foundation
 
-# أعلام المترجم (C flags)
-ANOGS_CFLAGS = -fobjc-arc -I$(THEOS)/include/dobby -I$(THEOS)/include/openssl
+# أعلام المترجم (Compiler Flags)
+# 1. تم إضافة -fno-modules و -fno-cxx-modules لحل مشكلة تعارض dobby.h مع extern "C".
+# 2. تم حذف مسار الاستدعاء الخاص بـ openssl لأننا استغنينا عن ملفات الـ Headers الخاصة به.
+ANOGS_CFLAGS = -fobjc-arc -fno-modules -fno-cxx-modules -I$(THEOS)/include/dobby
 
-# أعلام الرابط (LDFLAGS)
-# -ldobby : مكتبة Dobby للـ inline hooking
-# -lfishhook : مكتبة fishhook للربط الآمن (إذا كانت متوفرة كمكتبة وليس ملف مصدر)
-# -lssl -lcrypto : مكتبات OpenSSL (يجب توفرها ضمن مسار Theos أو SDK)
-# -lz : ضغط (قد تحتاجه OpenSSL)
-# -lresolv : قد تحتاجه بعض دوال النظام
-ANOGS_LDFLAGS = -ldobby -lfishhook -lssl -lcrypto -lz -lresolv
+# أعلام الرابط (Linker Flags)
+# 1. تم حذف -lssl و -lcrypto لأن الكود المحدث يعتمد على dlsym للحصول على رموز OpenSSL ديناميكياً فلا يتطلب ربطاً وقت التجميع.
+# 2. تم حذف -lfishhook لأننا نجمع ملف fishhook.c المصدري مباشرة ضمن المشروع (في سطر ANOGS_FILES).
+ANOGS_LDFLAGS = -ldobby -lz -lresolv
 
-# إذا كانت fishhook تأتي فقط كملف مصدر fishhook.c، فلا حاجة لـ -lfishhook في LDFLAGS.
-# في هذه الحالة يمكنك حذف -lfishhook من السطر أعلاه والاكتفاء بـ fishhook.c المذكور في ANOGS_FILES.
-
-# إذا كانت dobby غير موجودة كملف مصدر، بل كمكتبة ثابتة أو ديناميكية،
-# فحدد المسار المناسب باستخدام -L. مثال:
-# ANOGS_LDFLAGS += -L$(THEOS)/lib -ldobby
+# إذا كانت مكتبة dobby موجودة في مسار مخصص داخل الـ SDK، يمكنك فك التعليق عن السطر التالي وتعديله:
+# ANOGS_LDFLAGS += -L$(THEOS)/lib
 
 include $(THEOS_MAKE_PATH)/tweak.mk
