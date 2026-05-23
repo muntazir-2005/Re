@@ -10,7 +10,9 @@
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
-#include <sys/sysctl.h>
+// تعريف يدوي لدالة ptrace والثوابت المطلوبة (غير موجودة في iOS SDK)
+#define PT_DENY_ATTACH 31
+int ptrace(int request, pid_t pid, caddr_t addr, int data);
 #include <sys/ptrace.h>
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
