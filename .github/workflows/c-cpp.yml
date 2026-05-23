@@ -1,6 +1,5 @@
-name: iOS Hook Library Build
+name: iOS Theos Build
 
-# تحديد متى يتم تشغيل هذا الأكشن (عند الرفع أو طلب السحب على فرع main)
 on:
   push:
     branches: [ "main", "master" ]
@@ -9,41 +8,53 @@ on:
 
 jobs:
   build:
-    # استخدام خادم macOS لأننا نحتاج لـ iOS SDK و Xcode Command Line Tools
     runs-on: macos-latest
 
     steps:
-    # 1. سحب كود المشروع من جيت هب إلى الخادم
+    # 1. سحب كود المستودع الخاص بك
     - name: Checkout Repository Code
       uses: actions/checkout@v4
       with:
-        submodules: recursive # لسحب مكتبات الطرف الثالث إذا كانت مضافة كـ submodules
+        submodules: recursive
 
-    # 2. إعداد وإظهار نسخة Xcode المستخدمة للتأكد من وجود الـ SDK
-    - name: Set up Xcode and iOS SDK
+    # 2. إعداد بيئة Xcode
+    - name: Set up Xcode
       run: |
         sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-        xcrun --sdk iphoneos --show-sdk-path
 
-    # 3. تثبيت أو إعداد المكتبات الخارجية (OpenSSL كمثال عبر Homebrew)
-    # ملاحظة: إذا كانت مكتبات Dobby و fishhook مرفوعة معك في المشروع، سيقرأها الـ Makefile تلقائياً.
-    # هنا نقوم بتثبيت openssl للتأكد من توفر الملفات الرأسية (Headers)
-    - name: Install Dependencies via HomeBrew
+    # 3. تثبيت أحدث بيئة لـ Theos والـ SDKs تلقائياً
+    - name: Install Theos Environment
+      run: |
+        # تحميل وتثبيت Theos في المسار الافتراضي
+        bash -c "$(curl -fsSL https://raw.githubusercontent.com/theos/theos/master/bin/install-theos)"
+        
+        # تحميل أحدث الـ SDKs المطلوبة للبناء (iOS 14+ أو أحدث) لضمان عدم فشل المترجم
+        git clone https://github.com/theos/sdks.git $THEOS/sdks
+
+    # 4. تثبيت الاعتمادات الخارجية مثل OpenSSL إذا كان كودك يستدعيها
+    - name: Install Dependencies
       run: |
         brew install openssl@3
-        # إنشاء روابط رمزية (Symlinks) إذا كنت بحاجة لربطها بمسار مشروعك
-        mkdir -p ./openssl
-        ln -s /opt/homebrew/opt/openssl@3/include ./openssl/include
-        ln -s /opt/homebrew/opt/openssl@3/lib ./openssl/lib
+        # عمل روابط مخصصة لـ Theos ليجد OpenSSL أثناء البناء
+        mkdir -p ./include ./lib
+        ln -s /opt/homebrew/opt/openssl@3/include/* ./include/
+        ln -s /opt/homebrew/opt/openssl@3/lib/*.a ./lib/
 
-    # 4. تنفيذ أمر البناء باستخدام الـ Makefile الذي أنشأناه سابقاً
-    - name: Compile iOS dylib via Makefile
+    # 5. تشغيل أمر البناء الخاص بـ Theos
+    - name: Compile Tweak / Library via Theos
       run: |
-        make
+        # تفعيل متغيرات البيئة لـ Theos وتشغيل البناء للنسخة النهائية (Release)
+        export THEOS=/Users/runner/theos
+        make package FINALPACKAGE=1
 
-    # 5. حفظ الملف الناتج (.dylib) كـ Artifact لتحميله بعد انتهاء البناء
+    # 6. تصحيح الخطأ: رفع الملفات الناتجة باستخدام الأكشن الصحيح الرسمي
     - name: Upload Built Binary Artifact
-      uses: actions/artifacts@v4
+      uses: actions/upload-artifact@v4
       with:
-        name: ios-hook-library
-        path: final_hook.dylib # اسم الملف الناتج من الـ Makefile
+        name: ios-theos-package
+        # سيقوم الأكشن بالبحث عن مجلد packages الذي ينشئه Theos تلقائياً ويرفع ملف الـ .deb أو الـ .dylib المتواجد بداخله
+        path: |
+          packages/*.deb
+          .theos/obj/debug/*.dylib
+          *.dylib
+        if-no-files-found: warn
