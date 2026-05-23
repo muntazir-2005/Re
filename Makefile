@@ -1,40 +1,32 @@
-# ============================================================================
-# Makefile لبناء مكتبة الـ Hook لنظام iOS (arm64)
-# ============================================================================
+# Makefile for ANOGS.dylib
+# Assumes fishhook.c is present in the same directory.
+# Adjust SDK path if needed.
 
-# اسم الملف البرمجي الخاص بك واسم المكتبة الناتجة
-TARGET = final_hook.dylib
-SRC = ANOGS.mm
+CC = xcrun -sdk iphoneos clang
+ARCHS = arm64
+SDK = $(shell xcrun -sdk iphoneos --show-sdk-path)
+CFLAGS = -arch arm64 -isysroot $(SDK) -miphoneos-version-min=12.0 -fobjc-arc -O2
+LDFLAGS = -dynamiclib -install_name @executable_path/ANOGS.dylib
+FRAMEWORKS = -framework Foundation -framework UIKit -framework LocalAuthentication -framework Security
+LIBS = -lssl -lcrypto
 
-# 1. إعدادات الـ SDK الخاص بـ iOS (تلقائي عبر Xcode)
-SYSROOT = $(shell xcrun --sdk iphoneos --show-sdk-path)
-CC = $(shell xcrun --sdk iphoneos --find clang++)
+SRC = ANOGS.mm fishhook.c
+OBJ = $(SRC:.c=.o)
+OBJ := $(OBJ:.mm=.o)
 
-# المعمارية المستهدفة (iOS الحديث يعتمد بالكامل على arm64)
-ARCH = -arch arm64
-MIN_OS = -miphoneos-version-min=14.0
+all: ANOGS.dylib
 
-# 2. مسارات مكتبات الطرف الثالث (قم بتعديل هذه المسارات لتطابق مجلداتك)
-# هنا نفترض وجود مجلدين باسم dobby و fishhook في نفس مسار المشروع
-DOBBY_DIR = ./dobby
-FISHHOOK_DIR = ./fishhook
-OPENSSL_DIR = ./openssl
+ANOGS.dylib: $(OBJ)
+	$(CC) $(ARCHS) $(LDFLAGS) -o $@ $^ $(FRAMEWORKS) $(LIBS)
 
-# 3. راوبط التضمين (Headers / Include Paths)
-CFLAGS = $(ARCH) $(MIN_OS) -isysroot $(SYSROOT) -std=c++17 -O3 \
-         -I$(DOBBY_DIR)/include \
-         -I$(FISHHOOK_DIR) \
-         -I$(OPENSSL_DIR)/include
+%.o: %.c
+	$(CC) $(CFLAGS) -c $< -o $@
 
-# 4. روابط المكتبات الثابتة والديناميكية (Linker Flags)
-# نقوم بربط المكتبات كـ Static (.a) أو Dynamic (.dylib) وحقن الـ Frameworks الرسمية
-LDFLAGS = -dynamiclib \
-          -L$(DOBBY_DIR)/lib -ldobby \
-          -L$(OPENSSL_DIR)/lib -lssl -lcrypto \
-          -framework Foundation \
-          -framework Security \
-          -framework LocalAuthentication \
-          -framework UIKit \
+%.o: %.mm
+	$(CC) $(CFLAGS) -x objective-c++ -c $< -o $@
+
+clean:
+	rm -f $(OBJ) ANOGS.dylib          -framework UIKit \
           -framework CoreFoundation \
           -framework CommonCrypto
 
