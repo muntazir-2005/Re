@@ -16,56 +16,34 @@ jobs:
 
       - name: Setup Theos
         run: |
-          # تثبيت الأدوات الأساسية لنظام الماك
           brew install dpkg ldid
-          
           export THEOS=/opt/theos
           echo "THEOS=$THEOS" >> $GITHUB_ENV
           sudo mkdir -p $THEOS
           sudo chown -R $USER:staff $THEOS
-          
-          # تحميل بيئة Theos الرسمية
           git clone --recursive https://github.com/theos/theos.git $THEOS --depth=1
 
-      - name: Fix Dobby Modules Conflict (The Ultimate Fix)
+      - name: Fix Dobby Modules Conflict (Safe Inline Code)
         run: |
           export THEOS=/opt/theos
           DOBBY_HEADER="$THEOS/include/dobby/dobby.h"
           
-          # التحقق من وجود ملف dobby.h أولاً
           if [ -f "$DOBBY_HEADER" ]; then
             echo "[*] Modifying dobby.h to prevent C++ Modules conflict..."
             
-            # حيلة ذكية: نقوم بإعادة كتابة ملف dobby.h بحيث نخرج مكتبات النظام القياسية خارج نطاق extern "C"
-            # هذا يمنع خطأ "import of C++ module appears within extern C" نهائياً
-            cat << 'EOF' > "$DOBBY_HEADER"
-#ifndef DOBBY_H
-#define DOBBY_H
-
-#include <stdint.h>
-#include <sys/types.h>
-
-#ifdef __cplusplus
-extern "C" {
-#endif
-
-// بقية تعريفات dobby القياسية ستقرأ الآن بأمان تام
-#ifdef __cplusplus
-}
-#endif
-
-#endif /* DOBBY_H */
-EOF
+            # حيلة السطر الواحد باستخدام sed لتجنب أخطاء بنية الـ YAML (السطر 49)
+            # نقوم بحقن التضمينات القياسية قبل الـ extern "C" مباشرة لضمان تحميل الموديولات بأمان
+            sed -i '' 's/extern "C" {/#include <stdint.h>\n#include <sys\/types.h>\nextern "C" {/g' "$DOBBY_HEADER"
+            
             echo "[+] dobby.h modified successfully!"
           else
-            echo "[!] dobby.h not found in default path, skipping inline fix. (Make sure it is included in your project)"
+            echo "[!] dobby.h not found in default path, skipping inline fix."
           fi
 
       - name: Build Tweak
         run: |
           export THEOS=/opt/theos
           export PATH=$THEOS/bin:$PATH
-          # التجميع النهائي للـ Tweak
           make package FINALPACKAGE=1
 
       - name: Prepare Artifacts
@@ -107,12 +85,12 @@ EOF
             **ANOGS-AI** – إصدار مستقر ومحدث بالكامل ومتوافق مع جيل الحمايات الجديد.
             
             ### 📦 المحتويات:
-            - مكتبة `ANOGS.dylib` جاهزة للحقن المباشر (تعتمد على Dobby + Fishhook).
+            - مكتبة `ANOGS.dylib` جاهزة للحقن المباشر.
             - ملف التثبيت بصيغة `.deb`.
             
             ### 🚀 المميزات:
             - متوافق تماماً مع تحديثات النظام الجديدة iOS 15 وحتى iOS 18.5.
-            - تم حل مشكلة تعارض الموديولات (C++ Modules Error) بشكل تلقائي وديناميكي أثناء التجميع.
+            - إصلاح أخطاء التجميع والـ YAML بنجاح.
           draft: false
           prerelease: false
         env:
