@@ -1,26 +1,39 @@
 // ============================================================================
-// 完整稳定版反反调试/反越狱 Hook 库 (نسخة معدلة ومستقرة تماماً بدون أخطاء تجميع)
+// 完整稳定版反反调试/反越狱 Hook 库
 // 基于 fishhook (安全层) + Dobby (功能层) 双重保障，无崩溃，无需越狱
 // ============================================================================
 
-// 1. تضمين ملفات النظام الأساسية أولاً لمنع تعارض C++ Modules داخل dobby.h
-#include <stdint.h>
-#include <sys/types.h>
+// ============================================================================
+// حيلة التحديث الذكية: إجبار المترجم على تحميل الموديولات القياسية خارج نطاق Dobby
+// ============================================================================
+#import <stdbool.h>
+#import <stdint.h>
+#import <sys/types.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+    // تفعيل حواجز الحماية مسبقاً لمنع إعادة قراءة الملفات القياسية داخل نطاق extern "C"
+    #ifndef _STDINT_H
+    #define _STDINT_H
+    #endif
+    #ifndef _SYS_TYPES_H
+    #define _SYS_TYPES_H
+    #endif
+#ifdef __cplusplus
+}
+#endif
+
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
 #include <stdlib.h>
 #include <dlfcn.h>
 #include <sys/stat.h>
-#include <sys/sysctl.h>
-#include <time.h>
-#include <pthread.h>
-
-// تعريفات يدوية لدوال النظام غير الموجودة في الـ iOS SDK الافتراضي لـ Theos
+// تعريف يدوي لدالة ptrace والثوابت المطلوبة (غير موجودة في iOS SDK)
 #define PT_DENY_ATTACH 31
-extern "C" int ptrace(int request, pid_t pid, caddr_t addr, int data);
-extern "C" int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
-
+int ptrace(int request, pid_t pid, caddr_t addr, int data);
+#include <sys/ptrace.h>
 #include <mach/mach.h>
 #include <mach-o/dyld.h>
 #include <TargetConditionals.h>
@@ -30,18 +43,20 @@ extern "C" int proc_pidpath(int pid, void *buffer, uint32_t buffersize);
 #include <CommonCrypto/CommonCryptor.h>
 #include <Security/Security.h>
 #include <Security/SecKey.h>
+#include <openssl/rsa.h>
+#include <openssl/x509.h>
+#include <openssl/evp.h>
+#include <openssl/pem.h>
+#include <openssl/ssl.h>
+#include <time.h>
+#include <pthread.h>
 #include <objc/runtime.h>
 #include <objc/message.h>
 #include <LocalAuthentication/LocalAuthentication.h>
 
-// 2. استدعاء ملفات الرأس للمكتبات الخارجية
+// 第三方库头文件
 #include "fishhook.h"
 #include "dobby.h"
-
-// ============================================================================
-// 线程安全锁
-// ============================================================================
-static pthread_mutex_t g_hookMutex = PTHREAD_MUTEX_INITIALIZER;
 
 // ============================================================================
 // 基础辅助函数 (混淆 + 垃圾代码)
@@ -67,26 +82,23 @@ static inline void junk_code(void) {
     (void)c;
 }
 
-// إعلان مسبق للدوال لمنع الـ compiler warnings
-static int my_ptrace_dobby(int request, pid_t pid, caddr_t addr, int data);
-static int my_sysctl_dobby(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
-static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn);
-static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize);
-
 // ============================================================================
 // 第一层：鱼钩安全层 —— 在应用任何 Dobby Hook 之前，先强制禁用危险系统调用
 // ============================================================================
+
+// ptrace 替换
 static int (*orig_ptrace_safe)(int request, pid_t pid, caddr_t addr, int data);
 static int my_ptrace_safe(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) {
+        // 完全忽略 PT_DENY_ATTACH，防止应用自杀
         return 0;
     }
     if (orig_ptrace_safe) return orig_ptrace_safe(request, pid, addr, data);
     return 0;
 }
 
-static int (*orig_sysctl_safe)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
-static int my_sysctl_safe(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+// sysctl 替换 (清除 P_TRACED 标志)
+static int (*orig_sysctl_safe)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     int ret = orig_sysctl_safe ? orig_sysctl_safe(name, namelen, oldp, oldlenp, newp, newlen) : 0;
     if (ret == 0 && oldp && namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC && name[2] == KERN_PROC_PID) {
         struct kinfo_proc *kp = (struct kinfo_proc *)oldp;
@@ -95,27 +107,31 @@ static int my_sysctl_safe(int *name, u_int namelen, void *oldp, size_t *oldlenp,
     return ret;
 }
 
+// 最高优先级的 constructor，在 dyld 加载库时立即执行，确保所有安全 Hook 最先生效
 __attribute__((constructor(101)))
 static void initialize_fishhook_safety(void) {
+    // 避免递归调用
     static int initialized = 0;
     if (initialized) return;
     initialized = 1;
     
+    // 随机种子
     srand((unsigned int)time(NULL));
     
+    // 使用 fishhook 绑定 ptrace 和 sysctl，不能失败
     struct rebinding rebindings[] = {
         {"ptrace", (void *)my_ptrace_safe, (void **)&orig_ptrace_safe},
         {"sysctl", (void *)my_sysctl_safe, (void **)&orig_sysctl_safe},
     };
     rebind_symbols(rebindings, sizeof(rebindings) / sizeof(struct rebinding));
     
+    // 可选：强制再调用一次 ptrace 测试，确保没有崩溃
     ptrace(PT_DENY_ATTACH, 0, 0, 0);
 }
 
 // ============================================================================
 // 原函数指针 (完整列表，供 Dobby 层使用)
 // ============================================================================
-static int (*orig_printf)(const char *format, ...);
 static int (*orig_ptrace)(int request, pid_t pid, caddr_t addr, int data);
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
@@ -142,18 +158,18 @@ static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algo
 // CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
 
-// OpenSSL (تم تبديل أنواع الهياكل المفقودة بمؤشرات void* لمنع الحاجة لملفات الرأس)
-static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, void *rsa);
-static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, void *rsa);
-static int (*orig_EVP_PKEY_verify)(void *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
-static int (*orig_X509_verify_cert)(void *ctx);
-static int (*orig_X509_check_private_key)(void *x509, void *pkey);
-static void* (*orig_PEM_read_bio_PrivateKey)(void *bp, void **x, void *cb, void *u);
-static int (*orig_SSL_CTX_use_PrivateKey_file)(void *ctx, const char *file, int type);
-static int (*orig_SSL_CTX_check_private_key)(void *ctx);
-static int (*orig_SSL_CTX_load_verify_locations)(void *ctx, const char *CAfile, const char *CApath);
+// OpenSSL
+static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
+static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
+static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
+static int (*orig_X509_verify_cert)(X509_STORE_CTX *ctx);
+static int (*orig_X509_check_private_key)(X509 *x509, EVP_PKEY *pkey);
+static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u);
+static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, int type);
+static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
+static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Jailbreak / Debug 检测 C 函数
+// Jailbreak / Debug 检测 C 函数 (原始指针)
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -189,10 +205,8 @@ static int my_sysctl_dobby(int *name, u_int namelen, void *oldp, size_t *oldlenp
 
 static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     junk_code();
-    if (!name) return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : -1;
     char buf[256];
     strncpy(buf, name, sizeof(buf)-1);
-    buf[sizeof(buf)-1] = '\0';
     obfuscate_str(buf);
     if (strstr(buf, "qroht") || strstr(buf, "xrea.cebp")) {
         if (oldp && oldlenp) {
@@ -210,10 +224,8 @@ static void* my_dlopen(const char *path, int mode) {
 
 static void* my_dlsym(void *handle, const char *symbol) {
     junk_code();
-    if (!symbol) return orig_dlsym ? orig_dlsym(handle, symbol) : NULL;
     char buf[256];
     strncpy(buf, symbol, sizeof(buf)-1);
-    buf[sizeof(buf)-1] = '\0';
     obfuscate_str(buf);
     if (strstr(buf, "cgenpr") || strstr(buf, "flfpby") || strstr(buf, "gnfx_sbe_cvq") || strstr(buf, "iz_ernq")) {
         return NULL;
@@ -298,39 +310,39 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
 }
 
 // OpenSSL 替换 (总是返回成功)
-static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, void *rsa) {
+static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) {
     junk_code();
     return 1;
 }
-static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, void *rsa) {
+static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     junk_code();
     return 1;
 }
-static int my_EVP_PKEY_verify(void *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) {
+static int my_EVP_PKEY_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) {
     junk_code();
     return 1;
 }
-static int my_X509_verify_cert(void *ctx) {
+static int my_X509_verify_cert(X509_STORE_CTX *ctx) {
     junk_code();
     return 1;
 }
-static int my_X509_check_private_key(void *x509, void *pkey) {
+static int my_X509_check_private_key(X509 *x509, EVP_PKEY *pkey) {
     junk_code();
     return 1;
 }
-static void* my_PEM_read_bio_PrivateKey(void *bp, void **x, void *cb, void *u) {
+static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u) {
     junk_code();
     return NULL;
 }
-static int my_SSL_CTX_use_PrivateKey_file(void *ctx, const char *file, int type) {
+static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type) {
     junk_code();
     return 1;
 }
-static int my_SSL_CTX_check_private_key(void *ctx) {
+static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) {
     junk_code();
     return 1;
 }
-static int my_SSL_CTX_load_verify_locations(void *ctx, const char *CAfile, const char *CApath) {
+static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) {
     junk_code();
     return 1;
 }
@@ -351,12 +363,10 @@ static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
 
-static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSString *localizedReason, id reply) {
+static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy, id reply) {
     junk_code();
-    void (^replyBlock)(BOOL success, NSError *error) = (void (^)(BOOL, NSError *))reply;
-    if (replyBlock) {
-        replyBlock(YES, nil);
-    }
+    void (^replyBlock)(BOOL success, NSError *error) = reply;
+    replyBlock(YES, nil);
 }
 
 static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) {
@@ -370,8 +380,7 @@ static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, N
 static void stealth_hook(const char *obf_name, void *replacement, void **original) {
     char real_name[256];
     strncpy(real_name, obf_name, sizeof(real_name)-1);
-    real_name[sizeof(real_name)-1] = '\0';
-    obfuscate_str(real_name); 
+    obfuscate_str(real_name); // 反混淆
     void *sym = dlsym(RTLD_DEFAULT, real_name);
     if (sym) {
         DobbyHook(sym, replacement, original);
@@ -379,7 +388,7 @@ static void stealth_hook(const char *obf_name, void *replacement, void **origina
 }
 
 // ============================================================================
-// 环境检测函数
+// 环境检测函数 (安全版本，因为 ptrace/sysctl 已经被 fishhook 保护)
 // ============================================================================
 static int is_simulator(void) {
     junk_code();
@@ -454,10 +463,8 @@ static int is_substrate_loaded(void) {
     uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; i++) {
         const char *name = _dyld_get_image_name(i);
-        if (!name) continue;
         char buf[256];
         strncpy(buf, name, sizeof(buf)-1);
-        buf[sizeof(buf)-1] = '\0';
         obfuscate_str(buf);
         if (strstr(buf, "ZbovyrFhofgengr") || strstr(buf, "Fhofgengr") || strstr(buf, "PlqvnFhofgengr"))
             return 1;
@@ -473,9 +480,7 @@ static int is_debugserver_installed(void) { return access("/Developer/usr/bin/de
 static int check_provisioning(void) {
     uint32_t size = 0;
     _NSGetExecutablePath(NULL, &size);
-    if (size == 0) return 0;
-    
-    char *execPath = (char *)malloc(size);
+    char execPath[size];
     _NSGetExecutablePath(execPath, &size);
     char *lastSlash = strrchr(execPath, '/');
     if (lastSlash) {
@@ -488,16 +493,17 @@ static int check_provisioning(void) {
             long len = ftell(fp);
             fseek(fp, 0, SEEK_SET);
             char *data = (char*)malloc(len + 1);
-            size_t read_bytes = fread(data, 1, len, fp);
+            if (data) {
+                size_t read_bytes = fread(data, 1, len, fp);
+                data[read_bytes] = '\0';
+                int debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
+                free(data);
+                fclose(fp);
+                return debuggable;
+            }
             fclose(fp);
-            data[read_bytes] = '\0';
-            int debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
-            free(data);
-            free(execPath);
-            return debuggable;
         }
     }
-    free(execPath);
     return 0;
 }
 
@@ -509,13 +515,18 @@ static int check_env(void) {
 
 static int check_ppid(void) {
     pid_t ppid = getppid();
-    char pathbuf[4096];
-    if (proc_pidpath(ppid, pathbuf, sizeof(pathbuf)) > 0) {
-        char buf[256];
-        strncpy(buf, pathbuf, sizeof(buf)-1);
-        buf[sizeof(buf)-1] = '\0';
-        obfuscate_str(buf);
-        if (strstr(buf, "qrohtfreire") || strstr(buf, "yyqo")) return 1;
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/exe", ppid);
+    if (access(path, F_OK) == 0) {
+        char target[256];
+        ssize_t len = readlink(path, target, sizeof(target)-1);
+        if (len != -1) {
+            target[len] = '\0';
+            char buf[256];
+            strncpy(buf, target, sizeof(buf)-1);
+            obfuscate_str(buf);
+            if (strstr(buf, "qrohtfreire") || strstr(buf, "yyqo")) return 1;
+        }
     }
     return 0;
 }
@@ -524,6 +535,7 @@ static int is_frida_loaded(void) {
     return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL);
 }
 
+// 综合安全检查
 static void perform_security_checks(void) {
     int threat_level = 0;
     if (is_simulator()) threat_level += 10;
@@ -552,6 +564,7 @@ static void perform_security_checks(void) {
 // 主 Hook 函数 (由第二层 constructor 调用)
 // ============================================================================
 static void hook_all_functions(void) {
+    // 系统调用
     stealth_hook("cgenpr", (void*)my_ptrace_dobby, (void**)&orig_ptrace);
     stealth_hook("flfpby", (void*)my_sysctl_dobby, (void**)&orig_sysctl);
     stealth_hook("flfpbyolanzr", (void*)my_sysctlbyname, (void**)&orig_sysctlbyname);
@@ -578,7 +591,7 @@ static void hook_all_functions(void) {
     // CommonCrypto
     stealth_hook("PPPelcg", (void*)my_CCCrypt, (void**)&orig_CCCrypt);
 
-    // OpenSSL Hooks
+    // OpenSSL
     stealth_hook("ENF_irevsl", (void*)my_RSA_verify, (void**)&orig_RSA_verify);
     stealth_hook("ENF_fvta", (void*)my_RSA_sign, (void**)&orig_RSA_sign);
     stealth_hook("RUC_XRL_irevsl", (void*)my_EVP_PKEY_verify, (void**)&orig_EVP_PKEY_verify);
@@ -599,7 +612,6 @@ static void hook_all_functions(void) {
     for (int i = 0; i < 8; i++) {
         char real_name[256];
         strncpy(real_name, jb_funcs[i], sizeof(real_name)-1);
-        real_name[sizeof(real_name)-1] = '\0';
         obfuscate_str(real_name);
         void *sym = dlsym(RTLD_DEFAULT, real_name);
         if (sym) DobbyHook(sym, jb_repl[i], jb_orig[i]);
