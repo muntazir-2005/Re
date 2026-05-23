@@ -14,6 +14,8 @@
 // يمنع أنظمة الحماية من العثور على النصوص المكشوفة داخل ملفك
 // ==========================================
 #define XOR_KEY 0x5A
+
+__attribute__((unused))
 static NSString* decryptString(const unsigned char* encryptedStr, int length) {
     unsigned char decrypted[length + 1];
     for (int i = 0; i < length; i++) {
@@ -24,6 +26,7 @@ static NSString* decryptString(const unsigned char* encryptedStr, int length) {
 }
 
 // دالة مبسطة لفك تشفير C-Strings في الذاكرة لحظياً
+__attribute__((unused))
 static void decryptCString(const unsigned char* encryptedStr, int length, char* output) {
     for (int i = 0; i < length; i++) {
         output[i] = encryptedStr[i] ^ XOR_KEY;
@@ -47,7 +50,6 @@ static void* (*orig_dlsym)(void *, const char *);
 BOOL isPathBlocked(const char *path) {
     if (!path) return NO;
     // التحقق من مجلدات السجلات (Logs, MMKV, Gamelet)
-    // في بيئة حقيقية، نقوم بتشفير هذه النصوص وتمريرها مفككة هنا
     if (strstr(path, "ShadowTrackerExtra/Saved/") != NULL ||
         strstr(path, "Pandora") != NULL || 
         strstr(path, "Cydia") != NULL) {
@@ -104,7 +106,7 @@ int my_getaddrinfo(const char *hostname, const char *servname, const struct addr
 // ==========================================
 // اللعبة تستخدم ptrace لمنع أي برنامج من فحص ذاكرتها
 int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
-    // 31 هو PT_DENY_ATTACH، نظام الحماية يطلبه ليمنع أدوات الهاك من الاتصال
+    // 31 هو PT_DENY_ATTACH، نظام الحماية يطلقه ليمنع أدوات الهكر من الاتصال
     if (request == 31) { 
         return 0; // تخطي وتزييف العملية وكأنها نجحت دون إغلاق اللعبة
     }
