@@ -1,7 +1,3 @@
-# Makefile for ANOGS.dylib
-# Assumes fishhook.c is present in the same directory.
-# Adjust SDK path if needed.
-
 CC = xcrun -sdk iphoneos clang
 ARCHS = arm64
 SDK = $(shell xcrun -sdk iphoneos --show-sdk-path)
@@ -26,27 +22,4 @@ ANOGS.dylib: $(OBJ)
 	$(CC) $(CFLAGS) -x objective-c++ -c $< -o $@
 
 clean:
-	rm -f $(OBJ) ANOGS.dylib          -framework UIKit \
-          -framework CoreFoundation \
-          -framework CommonCrypto
-
-# 5. ملفات كود fishhook (لأنها غالباً تُدمج مباشرة ككود مصدري)
-# إذا كانت fishhook عبارة عن ملفات .c في مشروعك، سيتم بناؤها تلقائياً مع المشروع
-FISHHOOK_SRC = $(FISHHOOK_DIR)/fishhook.c
-
-# ============================================================================
-# أوامر البناء (Build Rules)
-# ============================================================================
-
-all: $(TARGET)
-
-$(TARGET): $(SRC)
-	@echo "[+] جاري بناء المكتبة الديناميكية لنظام iOS..."
-	$(CC) $(CFLAGS) $(LDFLAGS) $(SRC) $(FISHHOOK_SRC) -o $(TARGET)
-	@echo "[✓] تم البناء بنجاح: $(TARGET)"
-
-clean:
-	@echo "[-] جاري تنظيف مخلفات البناء..."
-	rm -f $(TARGET)
-
-.PHONY: all clean
+	rm -f $(OBJ) ANOGS.dylib
