@@ -1,6 +1,7 @@
 //  ANOGS.mm
 //  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
-//  Corrected: no OpenSSL headers, no ptrace.h, fixed utsname & isJailbroken
+//  All protection OFF by default – only activates via manual button (no delay)
+//  Call ANOGS_activate_protection() from a button to enable all hooks.
 
 #import <stdio.h>
 #import <string.h>
@@ -8,7 +9,7 @@
 #import <stdlib.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
-#import <sys/utsname.h>          // <-- added for utsname
+#import <sys/utsname.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
@@ -19,7 +20,6 @@
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
-#import <dispatch/dispatch.h>    // أضيف لتأخير التنفيذ
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -29,7 +29,7 @@
 
 #include "fishhook.h"
 
-// ptrace – not available in iOS SDK, use dynamic lookup
+// ptrace – dynamic lookup
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
@@ -39,7 +39,7 @@ static void load_real_ptrace(void) {
     }
 }
 
-// Forward declarations for OpenSSL types (no headers needed)
+// Forward declarations for OpenSSL types
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -61,6 +61,7 @@ static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address,
 static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
 static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
 static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+static int (*orig_printf)(const char * __restrict, ...);
 
 // Keychain
 static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
@@ -77,7 +78,7 @@ static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algo
 // CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
 
-// OpenSSL (hooked via fishhook, no direct calls)
+// OpenSSL
 static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
 static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
 static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
@@ -197,7 +198,7 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// OpenSSL (minimal replacements)
+// OpenSSL
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
 static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     if (sig_len) *sig_len = 0;
@@ -220,6 +221,18 @@ static bool my_checkJailbreak(void) { return false; }
 static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
+
+// printf replacement – only active after fishhook binds it
+static int my_printf(const char * __restrict format, ...) {
+    if (strstr(format, "debug") || strstr(format, "jailbreak")) {
+        return 0;
+    }
+    va_list args;
+    va_start(args, format);
+    int ret = vprintf(format, args);
+    va_end(args);
+    return ret;
+}
 
 // ============================================================================
 // Objective-C swizzling
@@ -265,7 +278,7 @@ void swizzle_objc_methods() {
 }
 
 // ============================================================================
-// fishhook
+// fishhook (printf now included, removed from __interpose)
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
@@ -278,6 +291,7 @@ void fishhook_bindings() {
         {"vm_write", (void *)my_vm_write, (void **)&orig_vm_write},
         {"vm_protect", (void *)my_vm_protect, (void **)&orig_vm_protect},
         {"mach_vm_protect", (void *)my_mach_vm_protect, (void **)&orig_mach_vm_protect},
+        {"printf", (void *)my_printf, (void **)&orig_printf},                       // <-- printf هنا
         {"SecItemCopyMatching", (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
         {"SecItemAdd", (void *)my_SecItemAdd, (void **)&orig_SecItemAdd},
         {"SecItemUpdate", (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate},
@@ -298,34 +312,6 @@ void fishhook_bindings() {
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
     };
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
-}
-
-// ============================================================================
-// __interpose
-// ============================================================================
-typedef struct interpose_s {
-    void *new_func;
-    void *orig_func;
-} interpose_t;
-
-#define INTERPOSE(new, orig) \
-    __attribute__((used)) static const interpose_t interpose_##new \
-    __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
-
-static int my_printf(const char *format, ...);
-
-INTERPOSE(my_printf, printf)
-// INTERPOSE(my_isJailbroken_c, isJailbroken)  // removed – isJailbroken symbol missing
-
-static int my_printf(const char *format, ...) {
-    if (strstr(format, "debug") || strstr(format, "jailbreak")) {
-        return 0;
-    }
-    va_list args;
-    va_start(args, format);
-    int ret = vprintf(format, args);
-    va_end(args);
-    return ret;
 }
 
 // ============================================================================
@@ -499,18 +485,26 @@ void perform_security_checks() {
 }
 
 // ============================================================================
-// Constructor – مؤجل 20 ثانية
+// Manual activation (كل الحماية معطلة حتى تنادي هذه الدالة من الزر)
+// ============================================================================
+static bool protection_activated = false;
+
+__attribute__((visibility("default")))
+void ANOGS_activate_protection(void) {
+    if (protection_activated) return;
+    protection_activated = true;
+
+    load_real_ptrace();
+    perform_security_checks();
+    fishhook_bindings();          // هنا يتم ربط printf وباقي الدوال
+    swizzle_objc_methods();
+    printf("تم تشغيل الحماية\n");
+}
+
+// ============================================================================
+// Constructor – فقط تهيئة البذرة العشوائية، لا شيء آخر
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
     srand((unsigned int)time(NULL));
-    
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)),
-                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        load_real_ptrace();
-        perform_security_checks();
-        fishhook_bindings();
-        swizzle_objc_methods();
-        printf("تم تشغيل الحماية\n");
-    });
 }
