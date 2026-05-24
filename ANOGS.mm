@@ -1,15 +1,10 @@
-//  ANOGS.mm
-//  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
-//  Fingerprint generated immediately; full protection activates after 20 seconds
-//  with visual confirmation (UIAlertController).
-
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
 #import <stdlib.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
-#import <sys/utsname.h>
+#import <sys/utsname.h>          // <-- added for utsname
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
@@ -17,21 +12,20 @@
 #import <sys/param.h>
 #import <sys/mount.h>
 #import <CommonCrypto/CommonCryptor.h>
-#import <CommonCrypto/CommonHMAC.h>
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
-#import <UIKit/UIKit.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <LocalAuthentication/LocalAuthentication.h>
+#import <UIKit/UIKit.h>          // <-- تم إضافة مكتبة الواجهات الرسومية هنا
 #endif
 
 #include "fishhook.h"
 
-// ptrace – dynamic lookup
+// ptrace – not available in iOS SDK, use dynamic lookup
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
@@ -41,7 +35,7 @@ static void load_real_ptrace(void) {
     }
 }
 
-// Forward declarations for OpenSSL types
+// Forward declarations for OpenSSL types (no headers needed)
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -63,7 +57,6 @@ static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address,
 static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
 static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
 static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
-static int (*orig_printf)(const char * __restrict, ...);
 
 // Keychain
 static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
@@ -80,7 +73,7 @@ static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algo
 // CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
 
-// OpenSSL
+// OpenSSL (hooked via fishhook, no direct calls)
 static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
 static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
 static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
@@ -200,7 +193,7 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// OpenSSL
+// OpenSSL (minimal replacements)
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
 static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     if (sig_len) *sig_len = 0;
@@ -223,18 +216,6 @@ static bool my_checkJailbreak(void) { return false; }
 static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
-
-// printf replacement
-static int my_printf(const char * __restrict format, ...) {
-    if (strstr(format, "debug") || strstr(format, "jailbreak")) {
-        return 0;
-    }
-    va_list args;
-    va_start(args, format);
-    int ret = vprintf(format, args);
-    va_end(args);
-    return ret;
-}
 
 // ============================================================================
 // Objective-C swizzling
@@ -293,7 +274,6 @@ void fishhook_bindings() {
         {"vm_write", (void *)my_vm_write, (void **)&orig_vm_write},
         {"vm_protect", (void *)my_vm_protect, (void **)&orig_vm_protect},
         {"mach_vm_protect", (void *)my_mach_vm_protect, (void **)&orig_mach_vm_protect},
-        {"printf", (void *)my_printf, (void **)&orig_printf},
         {"SecItemCopyMatching", (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
         {"SecItemAdd", (void *)my_SecItemAdd, (void **)&orig_SecItemAdd},
         {"SecItemUpdate", (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate},
@@ -317,52 +297,30 @@ void fishhook_bindings() {
 }
 
 // ============================================================================
-// Session Fingerprint – توليد بصمة توقيع رقمية فريدة عند كل تشغيل
+// __interpose
 // ============================================================================
-static NSString* sessionFingerprint(void) {
-    NSString *uuid = [[NSUUID UUID] UUIDString];
-    NSString *time = [NSString stringWithFormat:@"%.0f", [[NSDate date] timeIntervalSince1970] * 1000];
-    int magic = 106 + arc4random_uniform(1000000);
-    
-    NSString *raw = [NSString stringWithFormat:@"%@|%@|%d|726", uuid, time, magic];
-    
-    const char *key = [uuid UTF8String];
-    const char *data = [raw UTF8String];
-    
-    unsigned char hmac[CC_SHA256_DIGEST_LENGTH];
-    CCHmac(kCCHmacAlgSHA256, key, strlen(key), data, strlen(data), hmac);
-    
-    NSMutableString *fp = [NSMutableString stringWithCapacity:64];
-    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
-        [fp appendFormat:@"%02x", hmac[i]];
-    }
-    return fp;
-}
+typedef struct interpose_s {
+    void *new_func;
+    void *orig_func;
+} interpose_t;
 
-// حفظ البصمة في Keychain الحقيقي (باستخدام الدوال الأصلية قبل التعديل)
-static void saveFingerprint(NSString *fp) {
-    NSData *value = [fp dataUsingEncoding:NSUTF8StringEncoding];
-    NSDictionary *base = @{
-        (id)kSecClass: (id)kSecClassGenericPassword,
-        (id)kSecAttrService: @"com.anogs.bypass",
-        (id)kSecAttrAccount: @"sessionFingerprint",
-    };
-    
-    if (orig_SecItemDelete) {
-        orig_SecItemDelete((__bridge CFDictionaryRef)base);
-    } else {
-        SecItemDelete((__bridge CFDictionaryRef)base);
+#define INTERPOSE(new, orig) \
+    __attribute__((used)) static const interpose_t interpose_##new \
+    __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
+
+static int my_printf(const char *format, ...);
+
+INTERPOSE(my_printf, printf)
+
+static int my_printf(const char *format, ...) {
+    if (strstr(format, "debug") || strstr(format, "jailbreak")) {
+        return 0;
     }
-    
-    NSMutableDictionary *add = [base mutableCopy];
-    add[(id)kSecValueData] = value;
-    add[(id)kSecAttrAccessible] = (id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
-    
-    if (orig_SecItemAdd) {
-        orig_SecItemAdd((__bridge CFDictionaryRef)add, NULL);
-    } else {
-        SecItemAdd((__bridge CFDictionaryRef)add, NULL);
-    }
+    va_list args;
+    va_start(args, format);
+    int ret = vprintf(format, args);
+    va_end(args);
+    return ret;
 }
 
 // ============================================================================
@@ -536,101 +494,65 @@ void perform_security_checks() {
 }
 
 // ============================================================================
-// عرض رسالة تأكيد رسومية (UIAlertController) عند التفعيل
+// دالة عرض التنبيه بالواجهة الرسومية التلقائية
 // ============================================================================
-static void showProtectionActivatedAlert(NSString *fingerprint) {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        UIWindow *window = [UIApplication sharedApplication].keyWindow;
-        if (!window) {
-            for (UIWindow *win in [UIApplication sharedApplication].windows) {
-                if (win.isKeyWindow) {
-                    window = win;
-                    break;
+void show_protection_alert() {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIViewController *rootViewController = nil;
+        
+        // محاولة جلب الـ Window Scene النشط في أنظمة iOS 13 فما فوق
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive) {
+                    for (UIWindow *window in scene.windows) {
+                        if (window.isKeyWindow) {
+                            rootViewController = window.rootViewController;
+                            break;
+                        }
+                    }
                 }
             }
         }
         
-        if (window) {
-            UIAlertController *alert = [UIAlertController
-                alertControllerWithTitle:@"✅ تم تشغيل الحماية"
-                message:[NSString stringWithFormat:@"بصمة الجلسة:\n%@", fingerprint]
-                preferredStyle:UIAlertControllerStyleAlert];
-            [alert addAction:[UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:nil]];
-            [window.rootViewController presentViewController:alert animated:YES completion:nil];
+        // طريقة بديلة متوافقة مع الإصدارات الأقدم من iOS 13
+        if (!rootViewController) {
+            rootViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
+        }
+        
+        // إذا تم العثور على الواجهة يتم إظهار التنبيه فوراً
+        if (rootViewController) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنبيه"
+                                                                           message:@"تم تشغيل الحمايه"
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            
+            UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"موافق" 
+                                                               style:UIAlertActionStyleDefault 
+                                                             handler:nil];
+            [alert addAction:okAction];
+            [rootViewController presentViewController:alert animated:YES completion:nil];
         } else {
-            NSLog(@"🚀 ANOGS Protection Activated – Fingerprint: %@", fingerprint);
-            NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-            NSString *docPath = [paths firstObject];
-            NSString *filePath = [docPath stringByAppendingPathComponent:@"protection_activated.txt"];
-            [fingerprint writeToFile:filePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+            NSLog(@"[Hook] لم يتم العثور على الواجهة الرئيسية لعرض التنبيه.");
         }
     });
 }
 
 // ============================================================================
-// Manual & Delayed activation
-// ============================================================================
-static bool protection_activated = false;
-static NSString *currentFingerprint = nil;
-
-// تفعيل يدوي فوري (اختياري)
-__attribute__((visibility("default")))
-void ANOGS_activate_protection_manual(void) {
-    if (protection_activated) return;
-    protection_activated = true;
-
-    NSString *fp = currentFingerprint ? currentFingerprint : sessionFingerprint();
-    if (!currentFingerprint) {
-        currentFingerprint = fp;
-        saveFingerprint(fp);
-    }
-
-    load_real_ptrace();
-    perform_security_checks();
-    fishhook_bindings();
-    swizzle_objc_methods();
-
-    printf("تم تشغيل الحماية (يدوي) – بصمة الجلسة: %s\n", [fp UTF8String]);
-    showProtectionActivatedAlert(fp);
-}
-
-// التفعيل التلقائي المؤجل (يُستخدم داخلياً بعد 20 ثانية)
-static void activate_protection_delayed(void) {
-    if (protection_activated) return;
-    protection_activated = true;
-
-    NSString *fp = currentFingerprint;
-    if (!fp) {
-        fp = sessionFingerprint();
-        currentFingerprint = fp;
-        saveFingerprint(fp);
-    }
-
-    load_real_ptrace();
-    perform_security_checks();
-    fishhook_bindings();
-    swizzle_objc_methods();
-
-    printf("تم تشغيل الحماية (تلقائي) – بصمة الجلسة: %s\n", [fp UTF8String]);
-    showProtectionActivatedAlert(fp);
-}
-
-// ============================================================================
-// Constructor – يولد البصمة فوراً، ويُأجّل الحماية 20 ثانية
+// Constructor
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
     srand((unsigned int)time(NULL));
-
-    // 1. توليد بصمة الجلسة فوراً وحفظها
-    currentFingerprint = sessionFingerprint();
-    saveFingerprint(currentFingerprint);
-    printf("بصمة الجلسة أنشئت فوراً: %s\n", [currentFingerprint UTF8String]);
-
-    // 2. جدولة تشغيل الحماية بعد 20 ثانية
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)),
-                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
-        activate_protection_delayed();
+    
+    // إعداد التوقيت لتأخير كل العمليات 20 ثانية (تنفذ في طابور المعالجة الرئيسي)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"[Hook] بدء تفعيل الخطافات والحماية بعد مرور 20 ثانية...");
+        
+        load_real_ptrace();
+        perform_security_checks(); // ملاحظة: إذا كان التطبيق في بيئة فحص أو جيلبريك ومستوى التهديد عالي سيتوقف التطبيق هنا تلقائياً
+        fishhook_bindings();
+        swizzle_objc_methods();
+        
+        // استدعاء التنبيه المرئي للمستخدم
+        show_protection_alert();
     });
 }
