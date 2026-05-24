@@ -17,7 +17,7 @@
 #import <sys/param.h>
 #import <sys/mount.h>
 #import <CommonCrypto/CommonCryptor.h>
-#import <CommonCrypto/CommonHMAC.h>   // مطلوب لـ HMAC
+#import <CommonCrypto/CommonHMAC.h>
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
@@ -162,7 +162,7 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain – replaced with blocking functions
+// Keychain
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     return errSecItemNotFound;
 }
@@ -223,7 +223,7 @@ static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
-// printf replacement – only active after fishhook binds it
+// printf replacement
 static int my_printf(const char * __restrict format, ...) {
     if (strstr(format, "debug") || strstr(format, "jailbreak")) {
         return 0;
@@ -279,7 +279,7 @@ void swizzle_objc_methods() {
 }
 
 // ============================================================================
-// fishhook (printf now included, removed from __interpose)
+// fishhook
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
@@ -347,11 +347,11 @@ static void saveFingerprint(NSString *fp) {
         (id)kSecAttrAccount: @"sessionFingerprint",
     };
     
-    // حذف أي بصمة قديمة (باستخدام الدالة الأصلية)
+    // حذف أي بصمة قديمة (باستخدام الدالة الأصلية) – استخدام __bridge
     if (orig_SecItemDelete) {
-        orig_SecItemDelete((CFDictionaryRef)base);
+        orig_SecItemDelete((__bridge CFDictionaryRef)base);
     } else {
-        SecItemDelete((CFDictionaryRef)base);
+        SecItemDelete((__bridge CFDictionaryRef)base);
     }
     
     NSMutableDictionary *add = [base mutableCopy];
@@ -359,9 +359,9 @@ static void saveFingerprint(NSString *fp) {
     add[(id)kSecAttrAccessible] = (id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
     
     if (orig_SecItemAdd) {
-        orig_SecItemAdd((CFDictionaryRef)add, NULL);
+        orig_SecItemAdd((__bridge CFDictionaryRef)add, NULL);
     } else {
-        SecItemAdd((CFDictionaryRef)add, NULL);
+        SecItemAdd((__bridge CFDictionaryRef)add, NULL);
     }
 }
 
@@ -378,9 +378,9 @@ static NSString* loadFingerprint(void) {
     CFDataRef data = NULL;
     OSStatus status;
     if (orig_SecItemCopyMatching) {
-        status = orig_SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&data);
+        status = orig_SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&data);
     } else {
-        status = SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&data);
+        status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&data);
     }
     
     if (status == errSecSuccess && data) {
@@ -562,7 +562,7 @@ void perform_security_checks() {
 }
 
 // ============================================================================
-// Manual activation (كل الحماية معطلة حتى تنادي هذه الدالة من الزر)
+// Manual activation – كل الحماية معطلة حتى تنادي هذه الدالة من الزر
 // ============================================================================
 static bool protection_activated = false;
 
@@ -574,13 +574,12 @@ void ANOGS_activate_protection(void) {
     // 1. إنشاء بصمة الجلسة وحفظها قبل تفعيل hooks (كي نستخدم Keychain الحقيقي)
     NSString *fingerprint = sessionFingerprint();
     saveFingerprint(fingerprint);
-    // يمكن استرجاعها لاحقاً بـ loadFingerprint()
 
     // 2. فحوصات الأمان الأولية
     load_real_ptrace();
     perform_security_checks();
 
-    // 3. تفعيل hooks (بعدها لن يعمل Keychain العادي، لكن يمكننا استخدام orig_*)
+    // 3. تفعيل hooks
     fishhook_bindings();
     swizzle_objc_methods();
 
