@@ -1,4 +1,5 @@
-// ANOGS.mm – Hooking library using Theos (no jailbreak)
+//  ANOGS.mm
+//  Hooking Techniques using Theos – no jailbreak, fully corrected
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -25,7 +26,7 @@
 
 #include "fishhook.h"
 
-// ptrace dynamic loading (not in iOS SDK)
+// ptrace – غير متاحة في iOS SDK، تحميل ديناميكي
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
@@ -293,18 +294,40 @@ int is_ssh_running() { return (access("/usr/sbin/sshd", F_OK) == 0); }
 int is_apt_installed() { return (access("/etc/apt", F_OK) == 0); }
 int is_frida_installed() { return (access("/usr/sbin/frida-server", F_OK) == 0); }
 int is_debugserver_installed() { return (access("/Developer/usr/bin/debugserver", F_OK) == 0); }
+
+// Corrected check_provisioning – no VLA, proper C++ casts
 int check_provisioning() {
-    FILE *fp = NULL; uint32_t size=0;
+    FILE *fp = NULL;
+    uint32_t size = 0;
     _NSGetExecutablePath(NULL, &size);
-    char execPath[size]; _NSGetExecutablePath(execPath, &size);
-    char *last = strrchr(execPath, '/');
-    if (last) { *last='\0'; char p[MAXPATHLEN]; snprintf(p,sizeof(p),"%s/embedded.mobileprovision",execPath); fp=fopen(p,"r"); }
+    char *execPath = (char *)malloc(size);
+    if (!execPath) return 0;
+    _NSGetExecutablePath(execPath, &size);
+    char *lastSlash = strrchr(execPath, '/');
+    if (lastSlash) {
+        *lastSlash = '\0';
+        char path[MAXPATHLEN];
+        snprintf(path, sizeof(path), "%s/embedded.mobileprovision", execPath);
+        fp = fopen(path, "r");
+    }
+    free(execPath);
     if (!fp) return 0;
-    fseek(fp,0,SEEK_END); long len=ftell(fp); fseek(fp,0,SEEK_SET);
-    char *data=malloc(len+1); fread(data,1,len,fp); fclose(fp); data[len]='\0';
-    int res = (strstr(data,"<key>get-task-allow</key><true/>") != NULL);
-    free(data); return res;
+    fseek(fp, 0, SEEK_END);
+    long len = ftell(fp);
+    fseek(fp, 0, SEEK_SET);
+    char *data = (char *)malloc(len + 1);
+    if (!data) {
+        fclose(fp);
+        return 0;
+    }
+    fread(data, 1, len, fp);
+    fclose(fp);
+    data[len] = '\0';
+    int is_debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
+    free(data);
+    return is_debuggable;
 }
+
 int check_env() {
     const char *vars[]={"DYLD_PRINT_TO_FILE","DYLD_INSERT_LIBRARIES","CFNETWORK_DIAGNOSTICS","OBJC_DISABLE_VALIDATION",NULL};
     for (int i=0; vars[i]; i++) if (getenv(vars[i])) return 1;
