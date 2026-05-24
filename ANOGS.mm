@@ -1,5 +1,4 @@
-//  ANOGS.mm
-//  Hooking Techniques using Theos – no jailbreak, fully corrected
+//  ANOGS.mm – final clean build with Theos
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -26,7 +25,7 @@
 
 #include "fishhook.h"
 
-// ptrace – غير متاحة في iOS SDK، تحميل ديناميكي
+// ptrace dynamic loading
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
@@ -34,7 +33,7 @@ static void load_real_ptrace(void) {
     if (!real_ptrace) real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
 }
 
-// Forward declarations for OpenSSL types (no headers needed)
+// OpenSSL forward declarations
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -44,7 +43,7 @@ typedef struct ssl_ctx_st SSL_CTX;
 typedef struct bio_st BIO;
 typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
 
-// Original function pointers
+// Original function pointers (used in fishhook)
 static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
 static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
 static void* (*orig_dlopen)(const char *, int);
@@ -72,21 +71,8 @@ static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *, EVP_PKEY **, pem_passwor
 static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *, const char *, int);
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *, const char *, const char *);
-static bool (*orig_is_jb)(void);
-static bool (*orig_ROOTED)(void);
-static bool (*orig_DEBUGGER_ATTACHED)(void);
-static bool (*orig_isDebuggerAttached)(void);
-static bool (*orig_checkJailbreak)(void);
-static bool (*orig_hasCydia)(void);
-static bool (*orig_isJailbroken)(void);
-static bool (*orig_amIBeingDebugged)(void);
 
-// Hook replacements
-static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
-    if (request == PT_DENY_ATTACH) return 0;
-    load_real_ptrace();
-    return real_ptrace ? real_ptrace(request, pid, addr, data) : 0;
-}
+// Hook functions (used in fishhook)
 static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     int ret = orig_sysctl ? orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen) : 0;
     if (ret == 0 && oldp && namelen == 4 && name[0]==CTL_KERN && name[1]==KERN_PROC && name[2]==KERN_PROC_PID) {
@@ -149,16 +135,8 @@ static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_
 static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *f, int t) { return 1; }
 static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
 static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
-static bool my_is_jb(void) { return false; }
-static bool my_ROOTED(void) { return false; }
-static bool my_DEBUGGER_ATTACHED(void) { return false; }
-static bool my_isDebuggerAttached(void) { return false; }
-static bool my_checkJailbreak(void) { return false; }
-static bool my_hasCydia(void) { return false; }
-static bool my_isJailbroken_c(void) { return false; }
-static bool my_amIBeingDebugged(void) { return false; }
 
-// Objective-C swizzling
+// ObjC swizzling (used)
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
@@ -190,7 +168,7 @@ void swizzle_objc_methods() {
     }
 }
 
-// fishhook bindings
+// fishhook binding (uses all orig_* and my_* above)
 void fishhook_bindings() {
     struct rebinding bindings[] = {
         {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
@@ -224,7 +202,7 @@ void fishhook_bindings() {
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
-// __interpose
+// __interpose (printf only)
 typedef struct interpose_s { void *new_func; void *orig_func; } interpose_t;
 #define INTERPOSE(new, orig) \
     __attribute__((used)) static const interpose_t interpose_##new \
@@ -242,7 +220,7 @@ static int my_printf(const char *format, ...) {
     return ret;
 }
 
-// Security checks (original functions, no hooks yet)
+// Security checks (no unused elements)
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
     return 1;
@@ -295,7 +273,7 @@ int is_apt_installed() { return (access("/etc/apt", F_OK) == 0); }
 int is_frida_installed() { return (access("/usr/sbin/frida-server", F_OK) == 0); }
 int is_debugserver_installed() { return (access("/Developer/usr/bin/debugserver", F_OK) == 0); }
 
-// Corrected check_provisioning – no VLA, proper C++ casts
+// Corrected check_provisioning
 int check_provisioning() {
     FILE *fp = NULL;
     uint32_t size = 0;
