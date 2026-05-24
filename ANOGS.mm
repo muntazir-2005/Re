@@ -1,7 +1,7 @@
-// main.m
-// تطبيق iOS مع زر تشغيل ANTIBAN - كل الملفات مدمجة في ملف واحد
+//  ViewController.m
+//  واجهة تشغيل الحماية يدوياً
 
-#import <UIKit/UIKit.h>
+#import "ViewController.h"
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -245,30 +245,35 @@ static void fishhook_bindings() {
 }
 
 // ============================================================================
-// دوال الحماية الأساسية
+// دوال البيئة (اختيارية – يمكن تفعيلها من الزر)
+// ============================================================================
+static void perform_security_checks() {
+    // يمكنك تركها فارغة أو إضافة تحليلات دون قتل التطبيق
+}
+
+// ============================================================================
+// بدء تشغيل الحماية (يتم استدعاؤها عند الضغط على الزر)
 // ============================================================================
 void start_antiban_protection(void) {
     load_real_ptrace();
     fishhook_bindings();
     swizzle_objc_methods();
+    perform_security_checks();
     // ptrace anti-debug
     if (real_ptrace) real_ptrace(PT_DENY_ATTACH, 0, 0, 0);
 }
 
 // ============================================================================
-// فئة AppDelegate المدمجة
+// واجهة المستخدم (ViewController)
 // ============================================================================
-@interface AppDelegate : UIResponder <UIApplicationDelegate>
-@property (strong, nonatomic) UIWindow *window;
+@interface ViewController ()
 @end
 
-@implementation AppDelegate
+@implementation ViewController
 
-- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
-    self.window = [[UIWindow alloc] initWithFrame:[[UIScreen mainScreen] bounds]];
-    // هنا نقوم بإنشاء ViewController برمجياً
-    UIViewController *vc = [[UIViewController alloc] init];
-    vc.view.backgroundColor = [UIColor systemBackgroundColor];
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
 
     // زر تشغيل الحماية
     UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
@@ -278,46 +283,15 @@ void start_antiban_protection(void) {
     [btn setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
     btn.layer.cornerRadius = 12;
     btn.translatesAutoresizingMaskIntoConstraints = NO;
-    [btn addTarget:vc action:@selector(activateProtection) forControlEvents:UIControlEventTouchUpInside];
-    [vc.view addSubview:btn];
+    [btn addTarget:self action:@selector(activateProtection) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:btn];
 
     [NSLayoutConstraint activateConstraints:@[
-        [btn.centerXAnchor constraintEqualToAnchor:vc.view.centerXAnchor],
-        [btn.centerYAnchor constraintEqualToAnchor:vc.view.centerYAnchor],
+        [btn.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [btn.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor],
         [btn.widthAnchor constraintEqualToConstant:220],
         [btn.heightAnchor constraintEqualToConstant:60]
     ]];
-
-    // إضافة دالة الهدف إلى الـ ViewController عبر امتداد (Category)
-    // سنقوم بإضافة method للـ UIViewController باستخدام associated object أو فئة فرعية بسيطة.
-    // لتبسيط الأمر: ننشئ فئة داخلية هنا.
-    // سنقوم بإنشاء فئة فرعية مؤقتة داخل هذا الملف.
-
-    // لا يمكننا تعريف فئة داخل الدالة، لذلك نعرّف فئة فرعية قبل هذا الكود:
-    // سننقل تعريف الفئة إلى خارج الدالة.
-
-    // لكن لتبسيط الكود نجعل VC من فئة مخصصة تعرف خارج الـ @implementation.
-    // سنقوم بتعريف فئة ViewController في الأسفل.
-
-    // ... يتابع بعد تعريف الفئة
-    self.window.rootViewController = vc;
-    [self.window makeKeyAndVisible];
-    return YES;
-}
-
-@end
-
-// ============================================================================
-// فئة ViewController المخصصة لتضمين الزر ووظيفته
-// ============================================================================
-@interface ViewController : UIViewController
-@end
-
-@implementation ViewController
-
-- (void)viewDidLoad {
-    [super viewDidLoad];
-    // لا شيء هنا، سيتم إضافة الزر من AppDelegate (لأننا نستخدم VC مخصص)
 }
 
 - (void)activateProtection {
@@ -330,12 +304,3 @@ void start_antiban_protection(void) {
 }
 
 @end
-
-// ============================================================================
-// main
-// ============================================================================
-int main(int argc, char * argv[]) {
-    @autoreleasepool {
-        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
-    }
-}
