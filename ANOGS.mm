@@ -19,6 +19,7 @@
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
+#import <dispatch/dispatch.h>    // أضيف لتأخير التنفيذ
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -498,13 +499,18 @@ void perform_security_checks() {
 }
 
 // ============================================================================
-// Constructor
+// Constructor – مؤجل 20 ثانية
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
     srand((unsigned int)time(NULL));
-    load_real_ptrace();
-    perform_security_checks();
-    fishhook_bindings();
-    swizzle_objc_methods();
+    
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        load_real_ptrace();
+        perform_security_checks();
+        fishhook_bindings();
+        swizzle_objc_methods();
+        printf("تم تشغيل الحماية\n");
+    });
 }
