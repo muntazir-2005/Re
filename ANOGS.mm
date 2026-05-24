@@ -1,7 +1,7 @@
 //  ANOGS.mm
 //  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
-//  All protection OFF by default – only activates via manual button (no delay)
-//  Call ANOGS_activate_protection() from a button to enable all hooks AND generate a session fingerprint.
+//  Fingerprint generated immediately; full protection activates after 20 seconds
+//  with visual confirmation (UIAlertController).
 
 #import <stdio.h>
 #import <string.h>
@@ -21,6 +21,7 @@
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
+#import <UIKit/UIKit.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -347,7 +348,6 @@ static void saveFingerprint(NSString *fp) {
         (id)kSecAttrAccount: @"sessionFingerprint",
     };
     
-    // حذف أي بصمة قديمة (باستخدام الدالة الأصلية) – استخدام __bridge
     if (orig_SecItemDelete) {
         orig_SecItemDelete((__bridge CFDictionaryRef)base);
     } else {
@@ -363,32 +363,6 @@ static void saveFingerprint(NSString *fp) {
     } else {
         SecItemAdd((__bridge CFDictionaryRef)add, NULL);
     }
-}
-
-// استرجاع البصمة (يمكن استخدامه حتى بعد تفعيل الحماية عبر orig_SecItemCopyMatching)
-static NSString* loadFingerprint(void) {
-    NSDictionary *query = @{
-        (id)kSecClass: (id)kSecClassGenericPassword,
-        (id)kSecAttrService: @"com.anogs.bypass",
-        (id)kSecAttrAccount: @"sessionFingerprint",
-        (id)kSecReturnData: @YES,
-        (id)kSecMatchLimit: (id)kSecMatchLimitOne
-    };
-    
-    CFDataRef data = NULL;
-    OSStatus status;
-    if (orig_SecItemCopyMatching) {
-        status = orig_SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&data);
-    } else {
-        status = SecItemCopyMatching((__bridge CFDictionaryRef)query, (CFTypeRef *)&data);
-    }
-    
-    if (status == errSecSuccess && data) {
-        NSString *fp = [[NSString alloc] initWithData:(__bridge NSData *)data encoding:NSUTF8StringEncoding];
-        CFRelease(data);
-        return fp;
-    }
-    return nil;
 }
 
 // ============================================================================
@@ -562,27 +536,101 @@ void perform_security_checks() {
 }
 
 // ============================================================================
-// Manual activation – كل الحماية معطلة حتى تنادي هذه الدالة من الزر
+// عرض رسالة تأكيد رسومية (UIAlertController) عند التفعيل
+// ============================================================================
+static void showProtectionActivatedAlert(NSString *fingerprint) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.5 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        UIWindow *window = [UIApplication sharedApplication].keyWindow;
+        if (!window) {
+            for (UIWindow *win in [UIApplication sharedApplication].windows) {
+                if (win.isKeyWindow) {
+                    window = win;
+                    break;
+                }
+            }
+        }
+        
+        if (window) {
+            UIAlertController *alert = [UIAlertController
+                alertControllerWithTitle:@"✅ تم تشغيل الحماية"
+                message:[NSString stringWithFormat:@"بصمة الجلسة:\n%@", fingerprint]
+                preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:nil]];
+            [window.rootViewController presentViewController:alert animated:YES completion:nil];
+        } else {
+            NSLog(@"🚀 ANOGS Protection Activated – Fingerprint: %@", fingerprint);
+            NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
+            NSString *docPath = [paths firstObject];
+            NSString *filePath = [docPath stringByAppendingPathComponent:@"protection_activated.txt"];
+            [fingerprint writeToFile:filePath atomically:YES encoding:NSUTF8StringEncoding error:nil];
+        }
+    });
+}
+
+// ============================================================================
+// Manual & Delayed activation
 // ============================================================================
 static bool protection_activated = false;
+static NSString *currentFingerprint = nil;
 
+// تفعيل يدوي فوري (اختياري)
 __attribute__((visibility("default")))
-void ANOGS_activate_protection(void) {
+void ANOGS_activate_protection_manual(void) {
     if (protection_activated) return;
     protection_activated = true;
 
-    // 1. إنشاء بصمة الجلسة وحفظها قبل تفعيل hooks (كي نستخدم Keychain الحقيقي)
-    NSString *fingerprint = sessionFingerprint();
-    saveFingerprint(fingerprint);
+    NSString *fp = currentFingerprint ? currentFingerprint : sessionFingerprint();
+    if (!currentFingerprint) {
+        currentFingerprint = fp;
+        saveFingerprint(fp);
+    }
 
-    // 2. فحوصات الأمان الأولية
     load_real_ptrace();
     perform_security_checks();
-
-    // 3. تفعيل hooks
     fishhook_bindings();
     swizzle_objc_methods();
 
-    // 4. طباعة تأكيد مع البصمة
-    printf("تم تشغيل الحماية – بصمة الجلسة: %s\n", [fingerprint UTF8String]);
+    printf("تم تشغيل الحماية (يدوي) – بصمة الجلسة: %s\n", [fp UTF8String]);
+    showProtectionActivatedAlert(fp);
+}
+
+// التفعيل التلقائي المؤجل (يُستخدم داخلياً بعد 20 ثانية)
+static void activate_protection_delayed(void) {
+    if (protection_activated) return;
+    protection_activated = true;
+
+    NSString *fp = currentFingerprint;
+    if (!fp) {
+        fp = sessionFingerprint();
+        currentFingerprint = fp;
+        saveFingerprint(fp);
+    }
+
+    load_real_ptrace();
+    perform_security_checks();
+    fishhook_bindings();
+    swizzle_objc_methods();
+
+    printf("تم تشغيل الحماية (تلقائي) – بصمة الجلسة: %s\n", [fp UTF8String]);
+    showProtectionActivatedAlert(fp);
+}
+
+// ============================================================================
+// Constructor – يولد البصمة فوراً، ويُأجّل الحماية 20 ثانية
+// ============================================================================
+__attribute__((constructor))
+void init_hook() {
+    srand((unsigned int)time(NULL));
+
+    // 1. توليد بصمة الجلسة فوراً وحفظها
+    currentFingerprint = sessionFingerprint();
+    saveFingerprint(currentFingerprint);
+    printf("بصمة الجلسة أنشئت فوراً: %s\n", [currentFingerprint UTF8String]);
+
+    // 2. جدولة تشغيل الحماية بعد 20 ثانية
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)),
+                   dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        activate_protection_delayed();
+    });
 }
