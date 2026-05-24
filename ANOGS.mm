@@ -1,7 +1,7 @@
 //  ANOGS.mm
 //  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
 //  All protection OFF by default – only activates via manual button (no delay)
-//  Call ANOGS_activate_protection() from a button to enable all hooks.
+//  Call ANOGS_activate_protection() from a button to enable all hooks AND generate a session fingerprint.
 
 #import <stdio.h>
 #import <string.h>
@@ -17,6 +17,7 @@
 #import <sys/param.h>
 #import <sys/mount.h>
 #import <CommonCrypto/CommonCryptor.h>
+#import <CommonCrypto/CommonHMAC.h>   // مطلوب لـ HMAC
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
@@ -161,7 +162,7 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain
+// Keychain – replaced with blocking functions
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
     return errSecItemNotFound;
 }
@@ -291,7 +292,7 @@ void fishhook_bindings() {
         {"vm_write", (void *)my_vm_write, (void **)&orig_vm_write},
         {"vm_protect", (void *)my_vm_protect, (void **)&orig_vm_protect},
         {"mach_vm_protect", (void *)my_mach_vm_protect, (void **)&orig_mach_vm_protect},
-        {"printf", (void *)my_printf, (void **)&orig_printf},                       // <-- printf هنا
+        {"printf", (void *)my_printf, (void **)&orig_printf},
         {"SecItemCopyMatching", (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
         {"SecItemAdd", (void *)my_SecItemAdd, (void **)&orig_SecItemAdd},
         {"SecItemUpdate", (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate},
@@ -312,6 +313,82 @@ void fishhook_bindings() {
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
     };
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
+}
+
+// ============================================================================
+// Session Fingerprint – توليد بصمة توقيع رقمية فريدة عند كل تشغيل
+// ============================================================================
+static NSString* sessionFingerprint(void) {
+    NSString *uuid = [[NSUUID UUID] UUIDString];
+    NSString *time = [NSString stringWithFormat:@"%.0f", [[NSDate date] timeIntervalSince1970] * 1000];
+    int magic = 106 + arc4random_uniform(1000000);
+    
+    NSString *raw = [NSString stringWithFormat:@"%@|%@|%d|726", uuid, time, magic];
+    
+    const char *key = [uuid UTF8String];
+    const char *data = [raw UTF8String];
+    
+    unsigned char hmac[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, key, strlen(key), data, strlen(data), hmac);
+    
+    NSMutableString *fp = [NSMutableString stringWithCapacity:64];
+    for (int i = 0; i < CC_SHA256_DIGEST_LENGTH; i++) {
+        [fp appendFormat:@"%02x", hmac[i]];
+    }
+    return fp;
+}
+
+// حفظ البصمة في Keychain الحقيقي (باستخدام الدوال الأصلية قبل التعديل)
+static void saveFingerprint(NSString *fp) {
+    NSData *value = [fp dataUsingEncoding:NSUTF8StringEncoding];
+    NSDictionary *base = @{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: @"com.anogs.bypass",
+        (id)kSecAttrAccount: @"sessionFingerprint",
+    };
+    
+    // حذف أي بصمة قديمة (باستخدام الدالة الأصلية)
+    if (orig_SecItemDelete) {
+        orig_SecItemDelete((CFDictionaryRef)base);
+    } else {
+        SecItemDelete((CFDictionaryRef)base);
+    }
+    
+    NSMutableDictionary *add = [base mutableCopy];
+    add[(id)kSecValueData] = value;
+    add[(id)kSecAttrAccessible] = (id)kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly;
+    
+    if (orig_SecItemAdd) {
+        orig_SecItemAdd((CFDictionaryRef)add, NULL);
+    } else {
+        SecItemAdd((CFDictionaryRef)add, NULL);
+    }
+}
+
+// استرجاع البصمة (يمكن استخدامه حتى بعد تفعيل الحماية عبر orig_SecItemCopyMatching)
+static NSString* loadFingerprint(void) {
+    NSDictionary *query = @{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: @"com.anogs.bypass",
+        (id)kSecAttrAccount: @"sessionFingerprint",
+        (id)kSecReturnData: @YES,
+        (id)kSecMatchLimit: (id)kSecMatchLimitOne
+    };
+    
+    CFDataRef data = NULL;
+    OSStatus status;
+    if (orig_SecItemCopyMatching) {
+        status = orig_SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&data);
+    } else {
+        status = SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&data);
+    }
+    
+    if (status == errSecSuccess && data) {
+        NSString *fp = [[NSString alloc] initWithData:(__bridge NSData *)data encoding:NSUTF8StringEncoding];
+        CFRelease(data);
+        return fp;
+    }
+    return nil;
 }
 
 // ============================================================================
@@ -494,17 +571,19 @@ void ANOGS_activate_protection(void) {
     if (protection_activated) return;
     protection_activated = true;
 
+    // 1. إنشاء بصمة الجلسة وحفظها قبل تفعيل hooks (كي نستخدم Keychain الحقيقي)
+    NSString *fingerprint = sessionFingerprint();
+    saveFingerprint(fingerprint);
+    // يمكن استرجاعها لاحقاً بـ loadFingerprint()
+
+    // 2. فحوصات الأمان الأولية
     load_real_ptrace();
     perform_security_checks();
-    fishhook_bindings();          // هنا يتم ربط printf وباقي الدوال
-    swizzle_objc_methods();
-    printf("تم تشغيل الحماية\n");
-}
 
-// ============================================================================
-// Constructor – فقط تهيئة البذرة العشوائية، لا شيء آخر
-// ============================================================================
-__attribute__((constructor))
-void init_hook() {
-    srand((unsigned int)time(NULL));
+    // 3. تفعيل hooks (بعدها لن يعمل Keychain العادي، لكن يمكننا استخدام orig_*)
+    fishhook_bindings();
+    swizzle_objc_methods();
+
+    // 4. طباعة تأكيد مع البصمة
+    printf("تم تشغيل الحماية – بصمة الجلسة: %s\n", [fingerprint UTF8String]);
 }
