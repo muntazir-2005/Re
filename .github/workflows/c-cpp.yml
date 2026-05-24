@@ -19,6 +19,9 @@ jobs:
           echo "THEOS=$THEOS" >> $GITHUB_ENV
           git clone --recursive https://github.com/theos/theos.git $THEOS
 
+      - name: Install ldid
+        run: brew install ldid
+
       - name: Build dylib
         run: make
 
