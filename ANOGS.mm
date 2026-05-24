@@ -1,9 +1,8 @@
 //  ANOGS.mm
-//  Hooking Techniques + GUI (Auto-hide after 5s) – PUBG Guest Fix
-//  - تم إلغاء تلاعب Keychain & CCCrypt & SecKey لتجنب كسر التطبيقات.
-//  - باقي hooks (ptrace, sysctl, vm_*, dlsym, ...) تعمل للحماية.
-//  - واجهة AntiBan تظهر 1s ثم تختفي بعد 5s.
+//  Hooking Techniques: Method Swizzling, fishhook, and __interpose (no jailbreak)
+//  باﻹضافة إلى واجهة مستخدم حديثة: زر تشغيل الحماية يدوياً مع رسالة تأكيد
 
+#import <UIKit/UIKit.h>
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -26,20 +25,23 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <LocalAuthentication/LocalAuthentication.h>
-#import <UIKit/UIKit.h>
 #endif
 
 #include "fishhook.h"
 
-// ptrace – dynamic loading
+// ============================================================================
+// ptrace dynamic lookup
+// ============================================================================
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
 static void load_real_ptrace(void) {
-    if (!real_ptrace) real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
+    if (!real_ptrace) {
+        real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
+    }
 }
 
-// OpenSSL forward declarations
+// Forward declarations for OpenSSL types
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -49,18 +51,36 @@ typedef struct ssl_ctx_st SSL_CTX;
 typedef struct bio_st BIO;
 typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
 
-// Original function pointers (used in fishhook)
-static int (*orig_sysctl)(int *, u_int, void *, size_t *, void *, size_t);
-static int (*orig_sysctlbyname)(const char *, void *, size_t *, void *, size_t);
-static void* (*orig_dlopen)(const char *, int);
-static void* (*orig_dlsym)(void *, const char *);
-static int (*orig_task_for_pid)(mach_port_t, int, mach_port_t *);
-static int (*orig_vm_read_overwrite)(vm_map_t, vm_address_t, vm_size_t, vm_address_t, vm_size_t *);
-static int (*orig_vm_write)(vm_map_t, vm_address_t, vm_offset_t, mach_msg_type_number_t);
-static int (*orig_vm_protect)(vm_map_t, vm_address_t, vm_size_t, boolean_t, vm_prot_t);
-static int (*orig_mach_vm_protect)(vm_map_t, mach_vm_address_t, mach_vm_size_t, boolean_t, vm_prot_t);
-
-// Environment checks (original pointers – not used in fishhook, kept for completeness)
+// ============================================================================
+// Original function pointers
+// ============================================================================
+static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+static void* (*orig_dlopen)(const char *path, int mode);
+static void* (*orig_dlsym)(void *handle, const char *symbol);
+static int (*orig_task_for_pid)(mach_port_t target_tport, int pid, mach_port_t *tn);
+static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize);
+static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
+static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
+static OSStatus (*orig_SecItemAdd)(CFDictionaryRef attributes, CFTypeRef *result);
+static OSStatus (*orig_SecItemUpdate)(CFDictionaryRef query, CFDictionaryRef attributesToUpdate);
+static OSStatus (*orig_SecItemDelete)(CFDictionaryRef query);
+static SecKeyRef (*orig_SecKeyCreateRandomKey)(CFDictionaryRef parameters, CFErrorRef *error);
+static SecKeyRef (*orig_SecKeyCopyPublicKey)(SecKeyRef key);
+static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error);
+static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error);
+static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
+static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
+static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
+static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
+static int (*orig_X509_verify_cert)(X509_STORE_CTX *ctx);
+static int (*orig_X509_check_private_key)(X509 *x509, EVP_PKEY *pkey);
+static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u);
+static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, int type);
+static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
+static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -70,7 +90,9 @@ static bool (*orig_hasCydia)(void);
 static bool (*orig_isJailbroken)(void);
 static bool (*orig_amIBeingDebugged)(void);
 
-// Replacement functions
+// ============================================================================
+// Replacement functions (الحماية)
+// ============================================================================
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
     load_real_ptrace();
@@ -87,11 +109,9 @@ static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void
 }
 
 static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    if (oldp && oldlenp) {
-        if (strstr(name, "debug") || strstr(name, "kern.proc")) {
-            memset(oldp, 0, *oldlenp);
-            return 0;
-        }
+    if (oldp && oldlenp && (strstr(name, "debug") || strstr(name, "kern.proc"))) {
+        memset(oldp, 0, *oldlenp);
+        return 0;
     }
     return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : 0;
 }
@@ -101,36 +121,55 @@ static void* my_dlopen(const char *path, int mode) {
 }
 
 static void* my_dlsym(void *handle, const char *symbol) {
-    if (symbol) {
-        if (strstr(symbol, "ptrace") || strstr(symbol, "sysctl") ||
-            strstr(symbol, "task_for_pid") || strstr(symbol, "vm_read")) {
-            return NULL;
-        }
+    if (symbol && (strstr(symbol, "ptrace") || strstr(symbol, "sysctl") || strstr(symbol, "task_for_pid") || strstr(symbol, "vm_read"))) {
+        return NULL;
     }
     return orig_dlsym ? orig_dlsym(handle, symbol) : NULL;
 }
 
-static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn) {
-    return KERN_FAILURE;
-}
-
-static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize) {
-    return KERN_FAILURE;
-}
-
-static int my_vm_write(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt) {
-    return KERN_FAILURE;
-}
-
+static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn) { return KERN_FAILURE; }
+static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize) { return KERN_FAILURE; }
+static int my_vm_write(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt) { return KERN_FAILURE; }
 static int my_vm_protect(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection) {
     return orig_vm_protect ? orig_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
-
 static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection) {
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Environment check replacements (unused)
+static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
+static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
+static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) { return errSecItemNotFound; }
+static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
+static SecKeyRef my_SecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) { return NULL; }
+static SecKeyRef my_SecKeyCopyPublicKey(SecKeyRef key) { return NULL; }
+static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error) {
+    return CFDataCreate(NULL, (const UInt8*)"fake_signature", 14);
+}
+static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error) { return true; }
+
+static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options,
+                                  const void *key, size_t keyLength, const void *iv,
+                                  const void *dataIn, size_t dataInLength,
+                                  void *dataOut, size_t dataOutAvailable,
+                                  size_t *dataOutMoved) {
+    if (!dataOut || !dataOutMoved) return kCCParamError;
+    size_t bytes = (dataInLength < dataOutAvailable) ? dataInLength : dataOutAvailable;
+    memcpy(dataOut, dataIn, bytes);
+    *dataOutMoved = bytes;
+    return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
+}
+
+static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
+static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) { if(sig_len) *sig_len = 0; return 0; }
+static int my_EVP_PKEY_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) { return 1; }
+static int my_X509_verify_cert(X509_STORE_CTX *ctx) { return 1; }
+static int my_X509_check_private_key(X509 *x509, EVP_PKEY *pkey) { return 1; }
+static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u) { return NULL; }
+static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type) { return 1; }
+static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
+static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
+
 static bool my_is_jb(void) { return false; }
 static bool my_ROOTED(void) { return false; }
 static bool my_DEBUGGER_ATTACHED(void) { return false; }
@@ -140,16 +179,28 @@ static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
-// LAContext swizzling (لا تؤثر على PUBG لكن نحتفظ بها)
-static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy,
-                                        NSString *localizedReason,
-                                        void(^reply)(BOOL success, NSError *error)) {
+// ============================================================================
+// Objective‑C Swizzling (إضافي)
+// ============================================================================
+static IMP orig_UIDevice_identifierForVendor;
+static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
+    return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
+}
+static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSString *localizedReason, void(^reply)(BOOL, NSError*)) {
     if (reply) reply(YES, nil);
 }
-static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) {
-    return YES;
-}
-void swizzle_objc_methods() {
+static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) { return YES; }
+
+static void swizzle_objc_methods() {
+    Class deviceCls = objc_getClass("UIDevice");
+    if (deviceCls) {
+        SEL sel = @selector(identifierForVendor);
+        Method m = class_getInstanceMethod(deviceCls, sel);
+        if (m) {
+            orig_UIDevice_identifierForVendor = method_getImplementation(m);
+            method_setImplementation(m, (IMP)my_UIDevice_identifierForVendor);
+        }
+    }
     Class laContextCls = objc_getClass("LAContext");
     if (laContextCls) {
         SEL sel1 = @selector(evaluatePolicy:localizedReason:reply:);
@@ -161,8 +212,10 @@ void swizzle_objc_methods() {
     }
 }
 
-// fishhook (بدون Keychain / CCCrypt / SecKey / OpenSSL)
-void fishhook_bindings() {
+// ============================================================================
+// fishhook bindings
+// ============================================================================
+static void fishhook_bindings() {
     struct rebinding bindings[] = {
         {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
         {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
@@ -173,214 +226,258 @@ void fishhook_bindings() {
         {"vm_write", (void *)my_vm_write, (void **)&orig_vm_write},
         {"vm_protect", (void *)my_vm_protect, (void **)&orig_vm_protect},
         {"mach_vm_protect", (void *)my_mach_vm_protect, (void **)&orig_mach_vm_protect},
-        // ملاحظة: تمت إزالة جميع hooks المتعلقة بـ Keychain, CCCrypt, SecKey, OpenSSL
-        // لأنها تسبب فشل تسجيل الدخول في PUBG وبعض التطبيقات.
-        // الحماية الأساسية (مصحح أخطاء، عمليات الذاكرة) باقية.
+        {"SecItemCopyMatching", (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
+        {"SecItemAdd", (void *)my_SecItemAdd, (void **)&orig_SecItemAdd},
+        {"SecItemUpdate", (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate},
+        {"SecItemDelete", (void *)my_SecItemDelete, (void **)&orig_SecItemDelete},
+        {"SecKeyCreateRandomKey", (void *)my_SecKeyCreateRandomKey, (void **)&orig_SecKeyCreateRandomKey},
+        {"SecKeyCopyPublicKey", (void *)my_SecKeyCopyPublicKey, (void **)&orig_SecKeyCopyPublicKey},
+        {"SecKeyCreateSignature", (void *)my_SecKeyCreateSignature, (void **)&orig_SecKeyCreateSignature},
+        {"SecKeyVerifySignature", (void *)my_SecKeyVerifySignature, (void **)&orig_SecKeyVerifySignature},
+        {"CCCrypt", (void *)my_CCCrypt, (void **)&orig_CCCrypt},
+        {"RSA_verify", (void *)my_RSA_verify, (void **)&orig_RSA_verify},
+        {"RSA_sign", (void *)my_RSA_sign, (void **)&orig_RSA_sign},
+        {"EVP_PKEY_verify", (void *)my_EVP_PKEY_verify, (void **)&orig_EVP_PKEY_verify},
+        {"X509_verify_cert", (void *)my_X509_verify_cert, (void **)&orig_X509_verify_cert},
+        {"X509_check_private_key", (void *)my_X509_check_private_key, (void **)&orig_X509_check_private_key},
+        {"PEM_read_bio_PrivateKey", (void *)my_PEM_read_bio_PrivateKey, (void **)&orig_PEM_read_bio_PrivateKey},
+        {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
+        {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
+        {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
     };
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
-// __interpose (printf only)
+// ============================================================================
+// __interpose (مثال)
+// ============================================================================
 typedef struct interpose_s { void *new_func; void *orig_func; } interpose_t;
-#define INTERPOSE(new, orig) \
-    __attribute__((used)) static const interpose_t interpose_##new \
-    __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
-
+#define INTERPOSE(new, orig) __attribute__((used)) static const interpose_t interpose_##new __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
 static int my_printf(const char *format, ...);
 INTERPOSE(my_printf, printf)
-
 static int my_printf(const char *format, ...) {
     if (strstr(format, "debug") || strstr(format, "jailbreak")) return 0;
-    va_list args;
-    va_start(args, format);
+    va_list args; va_start(args, format);
     int ret = vprintf(format, args);
-    va_end(args);
-    return ret;
+    va_end(args); return ret;
 }
 
 // ============================================================================
-// Environment checks (with global result storage for GUI)
+// دوال الكشف عن البيئة (للاستخدام في الحماية)
 // ============================================================================
-static int g_jailbreak_paths = 0;
-static int g_cydia = 0;
-static int g_dyld_hijack = 0;
-static int g_debugger = 0;
-static int g_ptrace_deny = 0;
-static int g_substrate = 0;
-static int g_ssh = 0;
-static int g_apt = 0;
-static int g_frida = 0;
-static int g_debugserver = 0;
-static int g_provision = 0;
-static int g_env = 0;
-static int g_ppid = 0;
-static int g_simulator = 0;
-
-int is_simulator() {
+static int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
-    g_simulator = 1; return 1;
+    return 1;
 #else
-    struct utsname systemInfo; uname(&systemInfo);
-    if (strcmp(systemInfo.machine, "x86_64") == 0 || strcmp(systemInfo.machine, "i386") == 0) {
-        g_simulator = 1; return 1;
-    }
-    g_simulator = 0; return 0;
+    struct utsname systemInfo;
+    uname(&systemInfo);
+    return (strcmp(systemInfo.machine, "x86_64") == 0 || strcmp(systemInfo.machine, "i386") == 0);
 #endif
 }
-int is_jailbroken_paths() {
-    const char *paths[] = { "/Applications/Cydia.app", "/Library/MobileSubstrate/MobileSubstrate.dylib", "/bin/bash", "/usr/sbin/sshd", "/etc/apt", "/private/var/lib/apt/", "/private/var/stash", "/usr/libexec/cydia", "/usr/sbin/frida-server", "/usr/bin/ssh", "/var/checkra1n.dmg", "/.bootstrapped", NULL };
-    for (int i=0; paths[i]; i++) if (access(paths[i], F_OK) == 0) { g_jailbreak_paths=1; return 1; }
-    g_jailbreak_paths=0; return 0;
+static int is_jailbroken_paths() {
+    const char *paths[] = {"/Applications/Cydia.app","/Library/MobileSubstrate/MobileSubstrate.dylib","/bin/bash","/usr/sbin/sshd","/etc/apt","/private/var/lib/apt/","/private/var/stash","/usr/libexec/cydia","/usr/sbin/frida-server","/usr/bin/ssh","/var/checkra1n.dmg","/.bootstrapped",NULL};
+    for (int i=0; paths[i]; i++) if (access(paths[i], F_OK)==0) return 1;
+    return 0;
 }
-int is_cydia_installed() {
+static int is_cydia_installed() {
 #if TARGET_OS_IPHONE
-    Class ls = objc_getClass("LSApplicationWorkspace"); if (ls) {
-        SEL dw = sel_registerName("defaultWorkspace"), open = sel_registerName("openApplicationWithBundleID:");
-        id ws = ((id(*)(id,SEL))objc_msgSend)((id)ls, dw);
-        if (ws) { int o = ((int(*)(id,SEL,id))objc_msgSend)(ws, open, @"com.saurik.Cydia"); g_cydia=o; return o; }
+    Class ls = objc_getClass("LSApplicationWorkspace");
+    if (ls) {
+        id workspace = ((id (*)(id, SEL))objc_msgSend)((id)ls, sel_registerName("defaultWorkspace"));
+        if (workspace) {
+            int opened = ((int (*)(id, SEL, id))objc_msgSend)(workspace, sel_registerName("openApplicationWithBundleID:"), @"com.saurik.Cydia");
+            return opened;
+        }
     }
 #endif
-    g_cydia=0; return 0;
+    return 0;
 }
-int is_dyld_hijacked() { if (getenv("DYLD_INSERT_LIBRARIES")||getenv("DYLD_FORCE_FLAT_NAMESPACE")) { g_dyld_hijack=1; return 1; } g_dyld_hijack=0; return 0; }
-int is_debugger_attached() {
-    int name[4]={CTL_KERN,KERN_PROC,KERN_PROC_PID,getpid()}; struct kinfo_proc info; size_t sz=sizeof(info); info.kp_proc.p_flag=0;
-    if (sysctl(name,4,&info,&sz,NULL,0)==-1) { g_debugger=0; return 0; }
-    int r = (info.kp_proc.p_flag & P_TRACED)!=0; g_debugger=r; return r;
+static int is_dyld_hijacked() { return (getenv("DYLD_INSERT_LIBRARIES")!=NULL || getenv("DYLD_FORCE_FLAT_NAMESPACE")!=NULL); }
+static int is_debugger_attached() {
+    int name[4] = {CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid()};
+    struct kinfo_proc info;
+    size_t info_size = sizeof(info);
+    if (sysctl(name, 4, &info, &info_size, NULL, 0) == -1) return 0;
+    return (info.kp_proc.p_flag & P_TRACED) != 0;
 }
-int ptrace_deny_attach() { load_real_ptrace(); if (!real_ptrace) { g_ptrace_deny=1; return 1; } int r = (real_ptrace(PT_DENY_ATTACH,0,0,0)==-1)?1:0; g_ptrace_deny=r; return r; }
-int is_substrate_loaded() { for (uint32_t i=0; i<_dyld_image_count(); i++) { const char *n=_dyld_get_image_name(i); if (strstr(n,"MobileSubstrate")||strstr(n,"Substrate")||strstr(n,"CydiaSubstrate")) { g_substrate=1; return 1; } } g_substrate=0; return 0; }
-int is_ssh_running() { int r=(access("/usr/sbin/sshd",F_OK)==0); g_ssh=r; return r; }
-int is_apt_installed() { int r=(access("/etc/apt",F_OK)==0); g_apt=r; return r; }
-int is_frida_installed() { int r=(access("/usr/sbin/frida-server",F_OK)==0); g_frida=r; return r; }
-int is_debugserver_installed() { int r=(access("/Developer/usr/bin/debugserver",F_OK)==0); g_debugserver=r; return r; }
-int check_provisioning() {
-    FILE *fp=NULL; uint32_t size=0; _NSGetExecutablePath(NULL,&size); char *execPath=(char*)malloc(size); if(!execPath) return 0;
-    _NSGetExecutablePath(execPath,&size); char *last=strrchr(execPath,'/');
-    if (last) { *last='\0'; char p[MAXPATHLEN]; snprintf(p,sizeof(p),"%s/embedded.mobileprovision",execPath); fp=fopen(p,"r"); }
-    free(execPath); if (!fp) { g_provision=0; return 0; }
-    fseek(fp,0,SEEK_END); long len=ftell(fp); fseek(fp,0,SEEK_SET);
-    char *data=(char*)malloc(len+1); if (!data) { fclose(fp); return 0; }
-    fread(data,1,len,fp); fclose(fp); data[len]='\0';
-    int is=(strstr(data,"<key>get-task-allow</key><true/>")!=NULL); free(data); g_provision=is; return is;
+static int ptrace_deny_attach() {
+    load_real_ptrace();
+    return real_ptrace ? (real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1) : 1;
 }
-int check_env() { const char *vars[]={"DYLD_PRINT_TO_FILE","DYLD_INSERT_LIBRARIES","CFNETWORK_DIAGNOSTICS","OBJC_DISABLE_VALIDATION",NULL}; for (int i=0; vars[i]; i++) if (getenv(vars[i])) { g_env=1; return 1; } g_env=0; return 0; }
-int check_ppid() {
-    pid_t ppid=getppid(); char path[256]; snprintf(path,sizeof(path),"/proc/%d/exe",ppid);
-    if (access(path,F_OK)==0) { char t[256]; ssize_t l=readlink(path,t,sizeof(t)-1); if (l!=-1) { t[l]='\0'; if (strstr(t,"debugserver")||strstr(t,"lldb")) { g_ppid=1; return 1; } } }
-    g_ppid=0; return 0;
+static int is_substrate_loaded() {
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i=0; i<count; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (strstr(name, "MobileSubstrate") || strstr(name, "Substrate") || strstr(name, "CydiaSubstrate")) return 1;
+    }
+    return 0;
 }
-int is_frida_loaded() { return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL); }
+static int is_ssh_running() { return access("/usr/sbin/sshd", F_OK)==0; }
+static int is_apt_installed() { return access("/etc/apt", F_OK)==0; }
+static int is_frida_installed() { return access("/usr/sbin/frida-server", F_OK)==0; }
+static int is_debugserver_installed() { return access("/Developer/usr/bin/debugserver", F_OK)==0; }
+static int check_provisioning() {
+    FILE *fp = NULL;
+    uint32_t size = 0;
+    _NSGetExecutablePath(NULL, &size);
+    char execPath[size];
+    _NSGetExecutablePath(execPath, &size);
+    char *lastSlash = strrchr(execPath, '/');
+    if (lastSlash) *lastSlash = '\0';
+    char path[MAXPATHLEN];
+    snprintf(path, sizeof(path), "%s/embedded.mobileprovision", execPath);
+    fp = fopen(path, "r");
+    if (!fp) return 0;
+    fseek(fp, 0, SEEK_END); long len = ftell(fp); fseek(fp, 0, SEEK_SET);
+    char *data = (char*)malloc(len+1);
+    fread(data, 1, len, fp);
+    fclose(fp);
+    data[len] = '\0';
+    int is_debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
+    free(data);
+    return is_debuggable;
+}
+static int check_env() {
+    const char *vars[] = {"DYLD_PRINT_TO_FILE","DYLD_INSERT_LIBRARIES","CFNETWORK_DIAGNOSTICS","OBJC_DISABLE_VALIDATION",NULL};
+    for (int i=0; vars[i]; i++) if (getenv(vars[i])!=NULL) return 1;
+    return 0;
+}
+static int check_ppid() {
+    pid_t ppid = getppid();
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/exe", ppid);
+    if (access(path, F_OK)==0) {
+        char target[256];
+        ssize_t len = readlink(path, target, sizeof(target)-1);
+        if (len!=-1) { target[len]='\0'; if (strstr(target,"debugserver")||strstr(target,"lldb")) return 1; }
+    }
+    return 0;
+}
+static int is_frida_loaded() { return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL); }
 
-void perform_security_checks() {
-    int t=0;
-    if (is_simulator()) t+=10;
-    if (is_jailbroken_paths()) t+=20;
-    if (is_cydia_installed()) t+=10;
-    if (is_dyld_hijacked()) t+=30;
-    if (is_debugger_attached()) t+=50;
-    if (ptrace_deny_attach()) t+=30;
-    if (is_substrate_loaded()) t+=20;
-    if (is_ssh_running()) t+=10;
-    if (is_apt_installed()) t+=10;
-    if (is_frida_installed() || is_frida_loaded()) t+=40;
-    if (is_debugserver_installed()) t+=20;
-    if (check_provisioning()) t+=30;
-    if (check_env()) t+=10;
-    if (check_ppid()) t+=40;
-    if (t>50) { usleep(rand()%100000); _exit(1); }
+static void perform_security_checks() {
+    int threat = 0;
+    if (is_simulator()) threat+=10;
+    if (is_jailbroken_paths()) threat+=20;
+    if (is_cydia_installed()) threat+=10;
+    if (is_dyld_hijacked()) threat+=30;
+    if (is_debugger_attached()) threat+=50;
+    if (ptrace_deny_attach()) threat+=30;
+    if (is_substrate_loaded()) threat+=20;
+    if (is_ssh_running()) threat+=10;
+    if (is_apt_installed()) threat+=10;
+    if (is_frida_installed() || is_frida_loaded()) threat+=40;
+    if (is_debugserver_installed()) threat+=20;
+    if (check_provisioning()) threat+=30;
+    if (check_env()) threat+=10;
+    if (check_ppid()) threat+=40;
+    if (threat > 50) {
+        usleep(rand() % 100000);
+        _exit(1);
+    }
 }
 
 // ============================================================================
-// 🎨 MODERN GUI OVERLAY – يختفي تلقائياً بعد 5 ثوانٍ
+// الدالة الرئيسية التي يتم استدعاؤها يدوياً لتفعيل كل الحماية
 // ============================================================================
-@interface ANOGSOverlay : NSObject
-+ (void)show;
-@end
-
-@implementation ANOGSOverlay
-+ (void)show {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *overlayWindow = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
-        overlayWindow.windowLevel = UIWindowLevelAlert + 1;
-        overlayWindow.backgroundColor = [UIColor clearColor];
-        overlayWindow.userInteractionEnabled = NO;
-        overlayWindow.rootViewController = [UIViewController new];
-
-        UIView *container = [[UIView alloc] initWithFrame:CGRectMake(10, 50, 300, 400)];
-        container.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.7];
-        container.layer.cornerRadius = 16;
-        container.layer.masksToBounds = YES;
-
-        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, 10, 300, 30)];
-        title.text = @"🛡️ ANOGS AntiBan";
-        title.textColor = [UIColor whiteColor];
-        title.textAlignment = NSTextAlignmentCenter;
-        title.font = [UIFont boldSystemFontOfSize:18];
-        [container addSubview:title];
-
-        NSArray *items = @[
-            @[@"Jailbreak Paths", @(g_jailbreak_paths)],
-            @[@"Cydia", @(g_cydia)],
-            @[@"DYLD Hijack", @(g_dyld_hijack)],
-            @[@"Debugger", @(g_debugger)],
-            @[@"PTrace Deny", @(g_ptrace_deny)],
-            @[@"Substrate", @(g_substrate)],
-            @[@"SSH", @(g_ssh)],
-            @[@"APT", @(g_apt)],
-            @[@"Frida", @(g_frida)],
-            @[@"Debugserver", @(g_debugserver)],
-            @[@"Provisioning", @(g_provision)],
-            @[@"Env Vars", @(g_env)],
-            @[@"Parent PID", @(g_ppid)],
-            @[@"Simulator", @(g_simulator)],
-        ];
-
-        int y = 50;
-        for (NSArray *item in items) {
-            UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(20, y, 200, 25)];
-            label.text = item[0];
-            label.textColor = [UIColor whiteColor];
-            label.font = [UIFont systemFontOfSize:14];
-            [container addSubview:label];
-
-            UIView *dot = [[UIView alloc] initWithFrame:CGRectMake(250, y+5, 14, 14)];
-            dot.layer.cornerRadius = 7;
-            int status = [item[1] intValue];
-            dot.backgroundColor = (status == 0) ? [UIColor greenColor] : [UIColor redColor];
-            [container addSubview:dot];
-            y += 25;
-        }
-
-        [overlayWindow.rootViewController.view addSubview:container];
-        overlayWindow.hidden = NO;
-
-        // إخفاء تلقائي بعد 5 ثوانٍ
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            overlayWindow.hidden = YES;
-            overlayWindow = nil;  // إزالة المرجع
-        });
-
-        // احتفاظ قوي مؤقت
-        static UIWindow *staticWindow = nil;
-        staticWindow = overlayWindow;
-    });
-}
-@end
-
-// ============================================================================
-// Constructor
-// ============================================================================
-__attribute__((constructor))
-void init_hook() {
+static BOOL isProtectionActive = NO;
+void activateAllProtections(void) {
+    if (isProtectionActive) return;
+    isProtectionActive = YES;
     srand((unsigned int)time(NULL));
     load_real_ptrace();
-    perform_security_checks();
-    fishhook_bindings();
-    swizzle_objc_methods();
+    perform_security_checks();   // فحص البيئة وإنهاء التطبيق إذا كان خطراً
+    fishhook_bindings();         // استبدال الدوال النظامية
+    swizzle_objc_methods();      // استبدال دوال Objective-C
+    // يمكن أيضاً استدعاء ptrace_deny_attach() بشكل إضافي
+    ptrace_deny_attach();
+}
 
-    // إظهار الواجهة بعد 1 ثانية
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        [ANOGSOverlay show];
-    });
+// ============================================================================
+// واجهة المستخدم (UI) – زر تشغيل الحماية مع رسالة تأكيد
+// ============================================================================
+@interface AntiBanViewController : UIViewController
+@end
+
+@implementation AntiBanViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor systemBackgroundColor];
+    self.title = @"ANOGS - الحماية";
+    
+    // زر كبير حديث
+    UIButton *activateButton = [UIButton buttonWithType:UIButtonTypeSystem];
+    activateButton.translatesAutoresizingMaskIntoConstraints = NO;
+    [activateButton setTitle:@"▶ تشغيل كافة الحماية" forState:UIControlStateNormal];
+    activateButton.titleLabel.font = [UIFont systemFontOfSize:22 weight:UIFontWeightSemibold];
+    activateButton.backgroundColor = [UIColor systemBlueColor];
+    [activateButton setTitleColor:[UIColor whiteColor] forState:UIControlStateNormal];
+    activateButton.layer.cornerRadius = 20;
+    activateButton.clipsToBounds = YES;
+    [activateButton addTarget:self action:@selector(activateProtectionTapped) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:activateButton];
+    
+    // تذييل نصي
+    UILabel *infoLabel = [[UILabel alloc] init];
+    infoLabel.translatesAutoresizingMaskIntoConstraints = NO;
+    infoLabel.text = @"اضغط الزر لتفعيل جميع تقنيات الحماية:\nMethod Swizzling, fishhook, __interpose\nوحماية ضد الجلبريك والتصحيح";
+    infoLabel.numberOfLines = 0;
+    infoLabel.textAlignment = NSTextAlignmentCenter;
+    infoLabel.textColor = [UIColor secondaryLabelColor];
+    infoLabel.font = [UIFont systemFontOfSize:14];
+    [self.view addSubview:infoLabel];
+    
+    // قيود Auto Layout
+    [NSLayoutConstraint activateConstraints:@[
+        [activateButton.centerXAnchor constraintEqualToAnchor:self.view.centerXAnchor],
+        [activateButton.centerYAnchor constraintEqualToAnchor:self.view.centerYAnchor constant:-40],
+        [activateButton.widthAnchor constraintEqualToConstant:260],
+        [activateButton.heightAnchor constraintEqualToConstant:60],
+        
+        [infoLabel.topAnchor constraintEqualToAnchor:activateButton.bottomAnchor constant:30],
+        [infoLabel.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor constant:20],
+        [infoLabel.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor constant:-20],
+    ]];
+}
+
+- (void)activateProtectionTapped {
+    // تفعيل الحماية
+    activateAllProtections();
+    
+    // عرض رسالة "تم تشغيل ANTIBAN فقط لاغير"
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"✅ تم التشغيل"
+                                                                   message:@"تم تشغيل ANTIBAN فقط لاغير"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:nil]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+@end
+
+// ============================================================================
+// AppDelegate بسيط لتشغيل النافذة
+// ============================================================================
+@interface AppDelegate : UIResponder <UIApplicationDelegate>
+@property (strong, nonatomic) UIWindow *window;
+@end
+
+@implementation AppDelegate
+
+- (BOOL)application:(UIApplication *)application didFinishLaunchingWithOptions:(NSDictionary *)launchOptions {
+    self.window = [[UIWindow alloc] initWithFrame:[UIScreen mainScreen].bounds];
+    self.window.rootViewController = [[UINavigationController alloc] initWithRootViewController:[[AntiBanViewController alloc] init]];
+    [self.window makeKeyAndVisible];
+    return YES;
+}
+
+@end
+
+// ============================================================================
+// نقطة الدخول الرئيسية
+// ============================================================================
+int main(int argc, char * argv[]) {
+    @autoreleasepool {
+        return UIApplicationMain(argc, argv, nil, NSStringFromClass([AppDelegate class]));
+    }
 }
