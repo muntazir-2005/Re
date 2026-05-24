@@ -1,4 +1,4 @@
-name: Build ANOGS.dylib with Theos
+name: Build ANOGS.dylib
 
 on:
   push:
@@ -12,15 +12,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v3
-
-      - name: Setup Theos
-        run: |
-          export THEOS=$HOME/theos
-          echo "THEOS=$THEOS" >> $GITHUB_ENV
-          git clone --recursive https://github.com/theos/theos.git $THEOS
-
-      - name: Install ldid
-        run: brew install ldid
 
       - name: Build dylib
         run: make
