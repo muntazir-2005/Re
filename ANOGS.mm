@@ -4,7 +4,7 @@
 #import <stdlib.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
-#import <sys/utsname.h>          // <-- added for utsname
+#import <sys/utsname.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
 #import <mach-o/dyld.h>
@@ -15,12 +15,16 @@
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
+#import <dispatch/dispatch.h>
+#import <sys/syscall.h>
+#import <netinet/in.h>
+#import <SystemConfiguration/SystemConfiguration.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <LocalAuthentication/LocalAuthentication.h>
-#import <UIKit/UIKit.h>          // <-- تم إضافة مكتبة الواجهات الرسومية هنا
+#import <UIKit/UIKit.h>
 #endif
 
 #include "fishhook.h"
@@ -46,7 +50,7 @@ typedef struct bio_st BIO;
 typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
 
 // ============================================================================
-// Original function pointers
+// Original function pointers – existing + new
 // ============================================================================
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
@@ -73,7 +77,7 @@ static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algo
 // CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
 
-// OpenSSL (hooked via fishhook, no direct calls)
+// OpenSSL
 static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
 static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
 static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
@@ -94,8 +98,70 @@ static bool (*orig_hasCydia)(void);
 static bool (*orig_isJailbroken)(void);
 static bool (*orig_amIBeingDebugged)(void);
 
+// NEW: additional function pointers
+static int (*orig_proc_regionfilename)(int pid, uint64_t address, char *buffer, uint32_t bufferSize); // optional
+static int (*orig_task_info)(task_name_t target_task, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_count);
+static int (*orig_pid_for_task)(mach_port_t task, int *pid);
+static pid_t (*orig_getpid)(void);
+static uid_t (*orig_getuid)(void);
+static int (*orig_stat)(const char *path, struct stat *buf);
+static int (*orig_access)(const char *path, int mode);
+static int (*orig_kill)(pid_t pid, int sig);
+static long (*orig_syscall)(long number, ...);
+static int (*orig_ioctl)(int fildes, unsigned long request, ...);
+static uint32_t (*orig_dyld_image_count)(void);
+static const char* (*orig_dyld_get_image_name)(uint32_t image_index);
+static const struct mach_header* (*orig_dyld_get_image_header)(uint32_t image_index);
+static intptr_t (*orig_dyld_get_image_vmaddr_slide)(uint32_t image_index);
+static int (*orig_dladdr)(const void *addr, Dl_info *info);
+static void* (*orig_mmap)(void *addr, size_t len, int prot, int flags, int fd, off_t offset);
+static int (*orig_mprotect)(void *addr, size_t len, int prot);
+static int (*orig_munmap)(void *addr, size_t len);
+static int (*orig_vm_read)(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_offset_t *data, mach_msg_type_number_t *dataCnt);
+static int (*orig_vm_remap)(vm_map_t target_task, vm_address_t *address, vm_size_t size, vm_offset_t mask, int flags, vm_offset_t src_addr, boolean_t copy, vm_prot_t *protection, vm_prot_t *max_protection, vm_inherit_t inheritance);
+static int (*orig_mach_vm_region_recurse)(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t *size, natural_t *depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt);
+static int (*orig_mach_vm_remap)(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t size, mach_vm_offset_t mask, int flags, vm_map_t src_task, mach_vm_address_t src_address, boolean_t copy, vm_prot_t *cur_protection, vm_prot_t *max_protection, vm_inherit_t inheritance);
+static uint64_t (*orig_mach_absolute_time)(void);
+static kern_return_t (*orig_mach_timebase_info)(mach_timebase_info_t info);
+static mach_msg_return_t (*orig_mach_msg)(mach_msg_header_t *msg, mach_msg_option_t option, mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_name_t rcv_name, mach_msg_timeout_t timeout, mach_port_name_t notify);
+static mach_port_t (*orig_mig_get_reply_port)(void);
+static kern_return_t (*orig_vm_deallocate)(vm_map_t target_task, vm_address_t address, vm_size_t size);
+static kern_return_t (*orig_vm_copy)(vm_map_t target_task, vm_address_t source_address, vm_size_t size, vm_address_t dest_address);
+static SCNetworkReachabilityRef (*orig_SCNetworkReachabilityCreateWithAddress)(CFAllocatorRef allocator, const struct sockaddr *address);
+static SCNetworkReachabilityRef (*orig_SCNetworkReachabilityCreateWithName)(CFAllocatorRef allocator, const char *name);
+static Boolean (*orig_SCNetworkReachabilityGetFlags)(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags *flags);
+static Boolean (*orig_SCNetworkReachabilitySetCallback)(SCNetworkReachabilityRef target, SCNetworkReachabilityCallBack callout, SCNetworkReachabilityContext *context);
+static Boolean (*orig_SCNetworkReachabilityScheduleWithRunLoop)(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode);
+static Boolean (*orig_SCNetworkReachabilityUnscheduleFromRunLoop)(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode);
+static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
+static int (*orig_connect)(int socket, const struct sockaddr *address, socklen_t address_len);
+static int (*orig_socket)(int domain, int type, int protocol);
+static int (*orig_setsockopt)(int socket, int level, int option_name, const void *option_value, socklen_t option_len);
+static int (*orig_getaddrinfo)(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res);
+static void (*orig_freeaddrinfo)(struct addrinfo *res);
+static const char* (*orig_inet_ntop)(int af, const void *src, char *dst, socklen_t size);
+static int (*orig_inet_pton)(int af, const char *src, void *dst);
+static CFUUIDRef (*orig_CFUUIDCreate)(CFAllocatorRef allocator);
+static CFStringRef (*orig_CFUUIDCreateString)(CFAllocatorRef allocator, CFUUIDRef uuid);
+static void (*orig_CFRelease)(CFTypeRef cf);
+static void (*orig_UIGraphicsBeginImageContextWithOptions)(CGSize size, BOOL opaque, CGFloat scale);
+static UIImage* (*orig_UIGraphicsGetImageFromCurrentImageContext)(void);
+static void (*orig_UIGraphicsEndImageContext)(void);
+static int (*orig_pthread_create)(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void*), void *arg);
+static pthread_t (*orig_pthread_self)(void);
+static int (*orig_pthread_setname_np)(const char *name);
+static int (*orig_pthread_getname_np)(pthread_t thread, char *name, size_t len);
+static int (*orig_pthread_mutex_lock)(pthread_mutex_t *mutex);
+static int (*orig_pthread_mutex_unlock)(pthread_mutex_t *mutex);
+static int (*orig_pthread_mutex_trylock)(pthread_mutex_t *mutex);
+static void (*orig_dispatch_once_f)(dispatch_once_t *predicate, void *context, dispatch_function_t function);
+static dispatch_semaphore_t (*orig_dispatch_semaphore_create)(long value);
+static long (*orig_dispatch_semaphore_wait)(dispatch_semaphore_t dsema, dispatch_time_t timeout);
+static long (*orig_dispatch_semaphore_signal)(dispatch_semaphore_t dsema);
+static void (*orig_dispatch_sync)(dispatch_queue_t queue, dispatch_block_t block);
+
 // ============================================================================
-// Replacement functions
+// Replacement functions – existing
 // ============================================================================
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
@@ -156,21 +222,11 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain
-static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
-    return errSecItemNotFound;
-}
-static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
-    return errSecDuplicateItem;
-}
-static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
-    return errSecItemNotFound;
-}
-static OSStatus my_SecItemDelete(CFDictionaryRef query) {
-    return errSecSuccess;
-}
+static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
+static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
+static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) { return errSecItemNotFound; }
+static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
 
-// SecKey
 static SecKeyRef my_SecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) { return NULL; }
 static SecKeyRef my_SecKeyCopyPublicKey(SecKeyRef key) { return NULL; }
 static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error) {
@@ -180,7 +236,6 @@ static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm
     return true;
 }
 
-// CommonCrypto
 static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options,
                                   const void *key, size_t keyLength, const void *iv,
                                   const void *dataIn, size_t dataInLength,
@@ -193,7 +248,6 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// OpenSSL (minimal replacements)
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
 static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     if (sig_len) *sig_len = 0;
@@ -207,7 +261,6 @@ static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int ty
 static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
 static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
 
-// Environment check replacements
 static bool my_is_jb(void) { return false; }
 static bool my_ROOTED(void) { return false; }
 static bool my_DEBUGGER_ATTACHED(void) { return false; }
@@ -218,7 +271,226 @@ static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
 // ============================================================================
-// Objective-C swizzling
+// NEW replacement functions
+// ============================================================================
+static int my_proc_regionfilename(int pid, uint64_t address, char *buffer, uint32_t bufferSize) {
+    // Most iOS binaries don't have this symbol, but if they do, return error
+    return -1;
+}
+static int my_task_info(task_name_t target_task, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_count) {
+    // Allow original but could filter fields
+    return orig_task_info ? orig_task_info(target_task, flavor, task_info_out, task_info_count) : KERN_FAILURE;
+}
+static int my_pid_for_task(mach_port_t task, int *pid) {
+    return KERN_FAILURE;
+}
+static pid_t my_getpid(void) {
+    return orig_getpid ? orig_getpid() : 0;
+}
+static uid_t my_getuid(void) {
+    // Return non-root uid
+    return 501; // mobile user
+}
+static int my_stat(const char *path, struct stat *buf) {
+    // Hide suspicious paths
+    if (path && (strstr(path, "/var/") || strstr(path, "/etc/apt") || strstr(path, "/usr/bin/ssh"))) {
+        return -1;
+    }
+    return orig_stat ? orig_stat(path, buf) : -1;
+}
+static int my_access(const char *path, int mode) {
+    if (path && (strstr(path, "/var/") || strstr(path, "Cydia") || strstr(path, "Substrate"))) {
+        return -1;
+    }
+    return orig_access ? orig_access(path, mode) : -1;
+}
+static int my_kill(pid_t pid, int sig) {
+    // Prevent killing our process
+    if (pid == getpid()) {
+        return 0;
+    }
+    return orig_kill ? orig_kill(pid, sig) : -1;
+}
+static long my_syscall(long number, ...) {
+    // Block ptrace and process tracing syscalls
+    if (number == SYS_ptrace || number == 26 /* ptrace on some archs */) {
+        return 0;
+    }
+    // Otherwise pass through (dangerous, but cannot easily forward variadic)
+    return 0;
+}
+static int my_ioctl(int fildes, unsigned long request, ...) {
+    // Block debugging ioctls
+    return -1;
+}
+static uint32_t my_dyld_image_count(void) {
+    // Return fake count or real? We'll return real but hook others
+    return orig_dyld_image_count ? orig_dyld_image_count() : 0;
+}
+static const char* my_dyld_get_image_name(uint32_t image_index) {
+    // Filter out suspicious dylibs
+    const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
+    if (name && (strstr(name, "Substrate") || strstr(name, "frida") || strstr(name, "cydia"))) {
+        return "";
+    }
+    return name;
+}
+static const struct mach_header* my_dyld_get_image_header(uint32_t image_index) {
+    return orig_dyld_get_image_header ? orig_dyld_get_image_header(image_index) : NULL;
+}
+static intptr_t my_dyld_get_image_vmaddr_slide(uint32_t image_index) {
+    return orig_dyld_get_image_vmaddr_slide ? orig_dyld_get_image_vmaddr_slide(image_index) : 0;
+}
+static int my_dladdr(const void *addr, Dl_info *info) {
+    // Return false to hide symbols
+    return 0;
+}
+static void* my_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset) {
+    // Allow but could restrict RWX
+    return orig_mmap ? orig_mmap(addr, len, prot, flags, fd, offset) : MAP_FAILED;
+}
+static int my_mprotect(void *addr, size_t len, int prot) {
+    // Allow but could block changing code pages to executable
+    return orig_mprotect ? orig_mprotect(addr, len, prot) : -1;
+}
+static int my_munmap(void *addr, size_t len) {
+    return orig_munmap ? orig_munmap(addr, len) : -1;
+}
+static int my_vm_read(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_offset_t *data, mach_msg_type_number_t *dataCnt) {
+    return KERN_FAILURE;
+}
+static int my_vm_remap(vm_map_t target_task, vm_address_t *address, vm_size_t size, vm_offset_t mask, int flags, vm_offset_t src_addr, boolean_t copy, vm_prot_t *protection, vm_prot_t *max_protection, vm_inherit_t inheritance) {
+    return KERN_FAILURE;
+}
+static int my_mach_vm_region_recurse(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t *size, natural_t *depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt) {
+    return KERN_FAILURE;
+}
+static int my_mach_vm_remap(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t size, mach_vm_offset_t mask, int flags, vm_map_t src_task, mach_vm_address_t src_address, boolean_t copy, vm_prot_t *cur_protection, vm_prot_t *max_protection, vm_inherit_t inheritance) {
+    return KERN_FAILURE;
+}
+static uint64_t my_mach_absolute_time(void) {
+    return orig_mach_absolute_time ? orig_mach_absolute_time() : 0;
+}
+static kern_return_t my_mach_timebase_info(mach_timebase_info_t info) {
+    return orig_mach_timebase_info ? orig_mach_timebase_info(info) : KERN_FAILURE;
+}
+static mach_msg_return_t my_mach_msg(mach_msg_header_t *msg, mach_msg_option_t option, mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_name_t rcv_name, mach_msg_timeout_t timeout, mach_port_name_t notify) {
+    // Filter dangerous messages
+    return orig_mach_msg ? orig_mach_msg(msg, option, send_size, rcv_size, rcv_name, timeout, notify) : MACH_SEND_INVALID_DATA;
+}
+static mach_port_t my_mig_get_reply_port(void) {
+    return orig_mig_get_reply_port ? orig_mig_get_reply_port() : MACH_PORT_NULL;
+}
+static kern_return_t my_vm_deallocate(vm_map_t target_task, vm_address_t address, vm_size_t size) {
+    return orig_vm_deallocate ? orig_vm_deallocate(target_task, address, size) : KERN_FAILURE;
+}
+static kern_return_t my_vm_copy(vm_map_t target_task, vm_address_t source_address, vm_size_t size, vm_address_t dest_address) {
+    return KERN_FAILURE;
+}
+
+// Network hooks – allow but could block
+static SCNetworkReachabilityRef my_SCNetworkReachabilityCreateWithAddress(CFAllocatorRef allocator, const struct sockaddr *address) {
+    return orig_SCNetworkReachabilityCreateWithAddress ? orig_SCNetworkReachabilityCreateWithAddress(allocator, address) : NULL;
+}
+static SCNetworkReachabilityRef my_SCNetworkReachabilityCreateWithName(CFAllocatorRef allocator, const char *name) {
+    return orig_SCNetworkReachabilityCreateWithName ? orig_SCNetworkReachabilityCreateWithName(allocator, name) : NULL;
+}
+static Boolean my_SCNetworkReachabilityGetFlags(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags *flags) {
+    if (flags) *flags = 0;
+    return false;
+}
+static Boolean my_SCNetworkReachabilitySetCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityCallBack callout, SCNetworkReachabilityContext *context) {
+    return false;
+}
+static Boolean my_SCNetworkReachabilityScheduleWithRunLoop(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode) {
+    return false;
+}
+static Boolean my_SCNetworkReachabilityUnscheduleFromRunLoop(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode) {
+    return false;
+}
+static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) {
+    return NULL;
+}
+static int my_connect(int socket, const struct sockaddr *address, socklen_t address_len) {
+    // Allow connections
+    return orig_connect ? orig_connect(socket, address, address_len) : -1;
+}
+static int my_socket(int domain, int type, int protocol) {
+    return orig_socket ? orig_socket(domain, type, protocol) : -1;
+}
+static int my_setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len) {
+    return orig_setsockopt ? orig_setsockopt(socket, level, option_name, option_value, option_len) : -1;
+}
+static int my_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
+    return orig_getaddrinfo ? orig_getaddrinfo(node, service, hints, res) : EAI_FAIL;
+}
+static void my_freeaddrinfo(struct addrinfo *res) {
+    if (orig_freeaddrinfo) orig_freeaddrinfo(res);
+}
+static const char* my_inet_ntop(int af, const void *src, char *dst, socklen_t size) {
+    return orig_inet_ntop ? orig_inet_ntop(af, src, dst, size) : NULL;
+}
+static int my_inet_pton(int af, const char *src, void *dst) {
+    return orig_inet_pton ? orig_inet_pton(af, src, dst) : 0;
+}
+static CFUUIDRef my_CFUUIDCreate(CFAllocatorRef allocator) {
+    return NULL;
+}
+static CFStringRef my_CFUUIDCreateString(CFAllocatorRef allocator, CFUUIDRef uuid) {
+    return CFSTR("00000000-0000-0000-0000-000000000000");
+}
+static void my_CFRelease(CFTypeRef cf) {
+    if (orig_CFRelease) orig_CFRelease(cf);
+}
+static void my_UIGraphicsBeginImageContextWithOptions(CGSize size, BOOL opaque, CGFloat scale) {
+    // Do nothing to prevent screenshot
+}
+static UIImage* my_UIGraphicsGetImageFromCurrentImageContext(void) {
+    return nil;
+}
+static void my_UIGraphicsEndImageContext(void) { }
+static int my_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void*), void *arg) {
+    return orig_pthread_create ? orig_pthread_create(thread, attr, start_routine, arg) : -1;
+}
+static pthread_t my_pthread_self(void) {
+    return orig_pthread_self ? orig_pthread_self() : 0;
+}
+static int my_pthread_setname_np(const char *name) {
+    if (name && strstr(name, "frida")) return 0;
+    return orig_pthread_setname_np ? orig_pthread_setname_np(name) : -1;
+}
+static int my_pthread_getname_np(pthread_t thread, char *name, size_t len) {
+    int ret = orig_pthread_getname_np ? orig_pthread_getname_np(thread, name, len) : -1;
+    if (ret == 0 && name && strstr(name, "frida")) memset(name, 0, len);
+    return ret;
+}
+static int my_pthread_mutex_lock(pthread_mutex_t *mutex) {
+    return orig_pthread_mutex_lock ? orig_pthread_mutex_lock(mutex) : -1;
+}
+static int my_pthread_mutex_unlock(pthread_mutex_t *mutex) {
+    return orig_pthread_mutex_unlock ? orig_pthread_mutex_unlock(mutex) : -1;
+}
+static int my_pthread_mutex_trylock(pthread_mutex_t *mutex) {
+    return orig_pthread_mutex_trylock ? orig_pthread_mutex_trylock(mutex) : -1;
+}
+static void my_dispatch_once_f(dispatch_once_t *predicate, void *context, dispatch_function_t function) {
+    if (orig_dispatch_once_f) orig_dispatch_once_f(predicate, context, function);
+}
+static dispatch_semaphore_t my_dispatch_semaphore_create(long value) {
+    return orig_dispatch_semaphore_create ? orig_dispatch_semaphore_create(value) : NULL;
+}
+static long my_dispatch_semaphore_wait(dispatch_semaphore_t dsema, dispatch_time_t timeout) {
+    return orig_dispatch_semaphore_wait ? orig_dispatch_semaphore_wait(dsema, timeout) : 0;
+}
+static long my_dispatch_semaphore_signal(dispatch_semaphore_t dsema) {
+    return orig_dispatch_semaphore_signal ? orig_dispatch_semaphore_signal(dsema) : 0;
+}
+static void my_dispatch_sync(dispatch_queue_t queue, dispatch_block_t block) {
+    if (orig_dispatch_sync) orig_dispatch_sync(queue, block);
+}
+
+// ============================================================================
+// Objective-C swizzling (unchanged)
 // ============================================================================
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
@@ -261,7 +533,7 @@ void swizzle_objc_methods() {
 }
 
 // ============================================================================
-// fishhook
+// fishhook – extended with all new symbols
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
@@ -292,12 +564,73 @@ void fishhook_bindings() {
         {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
         {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
+        
+        // NEW bindings
+        {"task_info", (void *)my_task_info, (void **)&orig_task_info},
+        {"pid_for_task", (void *)my_pid_for_task, (void **)&orig_pid_for_task},
+        {"getpid", (void *)my_getpid, (void **)&orig_getpid},
+        {"getuid", (void *)my_getuid, (void **)&orig_getuid},
+        {"stat", (void *)my_stat, (void **)&orig_stat},
+        {"access", (void *)my_access, (void **)&orig_access},
+        {"kill", (void *)my_kill, (void **)&orig_kill},
+        {"syscall", (void *)my_syscall, (void **)&orig_syscall},
+        {"ioctl", (void *)my_ioctl, (void **)&orig_ioctl},
+        {"dyld_image_count", (void *)my_dyld_image_count, (void **)&orig_dyld_image_count},
+        {"dyld_get_image_name", (void *)my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
+        {"dyld_get_image_header", (void *)my_dyld_get_image_header, (void **)&orig_dyld_get_image_header},
+        {"dyld_get_image_vmaddr_slide", (void *)my_dyld_get_image_vmaddr_slide, (void **)&orig_dyld_get_image_vmaddr_slide},
+        {"dladdr", (void *)my_dladdr, (void **)&orig_dladdr},
+        {"mmap", (void *)my_mmap, (void **)&orig_mmap},
+        {"mprotect", (void *)my_mprotect, (void **)&orig_mprotect},
+        {"munmap", (void *)my_munmap, (void **)&orig_munmap},
+        {"vm_read", (void *)my_vm_read, (void **)&orig_vm_read},
+        {"vm_remap", (void *)my_vm_remap, (void **)&orig_vm_remap},
+        {"mach_vm_region_recurse", (void *)my_mach_vm_region_recurse, (void **)&orig_mach_vm_region_recurse},
+        {"mach_vm_remap", (void *)my_mach_vm_remap, (void **)&orig_mach_vm_remap},
+        {"mach_absolute_time", (void *)my_mach_absolute_time, (void **)&orig_mach_absolute_time},
+        {"mach_timebase_info", (void *)my_mach_timebase_info, (void **)&orig_mach_timebase_info},
+        {"mach_msg", (void *)my_mach_msg, (void **)&orig_mach_msg},
+        {"mig_get_reply_port", (void *)my_mig_get_reply_port, (void **)&orig_mig_get_reply_port},
+        {"vm_deallocate", (void *)my_vm_deallocate, (void **)&orig_vm_deallocate},
+        {"vm_copy", (void *)my_vm_copy, (void **)&orig_vm_copy},
+        {"SCNetworkReachabilityCreateWithAddress", (void *)my_SCNetworkReachabilityCreateWithAddress, (void **)&orig_SCNetworkReachabilityCreateWithAddress},
+        {"SCNetworkReachabilityCreateWithName", (void *)my_SCNetworkReachabilityCreateWithName, (void **)&orig_SCNetworkReachabilityCreateWithName},
+        {"SCNetworkReachabilityGetFlags", (void *)my_SCNetworkReachabilityGetFlags, (void **)&orig_SCNetworkReachabilityGetFlags},
+        {"SCNetworkReachabilitySetCallback", (void *)my_SCNetworkReachabilitySetCallback, (void **)&orig_SCNetworkReachabilitySetCallback},
+        {"SCNetworkReachabilityScheduleWithRunLoop", (void *)my_SCNetworkReachabilityScheduleWithRunLoop, (void **)&orig_SCNetworkReachabilityScheduleWithRunLoop},
+        {"SCNetworkReachabilityUnscheduleFromRunLoop", (void *)my_SCNetworkReachabilityUnscheduleFromRunLoop, (void **)&orig_SCNetworkReachabilityUnscheduleFromRunLoop},
+        {"CFNetworkCopySystemProxySettings", (void *)my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
+        {"connect", (void *)my_connect, (void **)&orig_connect},
+        {"socket", (void *)my_socket, (void **)&orig_socket},
+        {"setsockopt", (void *)my_setsockopt, (void **)&orig_setsockopt},
+        {"getaddrinfo", (void *)my_getaddrinfo, (void **)&orig_getaddrinfo},
+        {"freeaddrinfo", (void *)my_freeaddrinfo, (void **)&orig_freeaddrinfo},
+        {"inet_ntop", (void *)my_inet_ntop, (void **)&orig_inet_ntop},
+        {"inet_pton", (void *)my_inet_pton, (void **)&orig_inet_pton},
+        {"CFUUIDCreate", (void *)my_CFUUIDCreate, (void **)&orig_CFUUIDCreate},
+        {"CFUUIDCreateString", (void *)my_CFUUIDCreateString, (void **)&orig_CFUUIDCreateString},
+        {"CFRelease", (void *)my_CFRelease, (void **)&orig_CFRelease},
+        {"UIGraphicsBeginImageContextWithOptions", (void *)my_UIGraphicsBeginImageContextWithOptions, (void **)&orig_UIGraphicsBeginImageContextWithOptions},
+        {"UIGraphicsGetImageFromCurrentImageContext", (void *)my_UIGraphicsGetImageFromCurrentImageContext, (void **)&orig_UIGraphicsGetImageFromCurrentImageContext},
+        {"UIGraphicsEndImageContext", (void *)my_UIGraphicsEndImageContext, (void **)&orig_UIGraphicsEndImageContext},
+        {"pthread_create", (void *)my_pthread_create, (void **)&orig_pthread_create},
+        {"pthread_self", (void *)my_pthread_self, (void **)&orig_pthread_self},
+        {"pthread_setname_np", (void *)my_pthread_setname_np, (void **)&orig_pthread_setname_np},
+        {"pthread_getname_np", (void *)my_pthread_getname_np, (void **)&orig_pthread_getname_np},
+        {"pthread_mutex_lock", (void *)my_pthread_mutex_lock, (void **)&orig_pthread_mutex_lock},
+        {"pthread_mutex_unlock", (void *)my_pthread_mutex_unlock, (void **)&orig_pthread_mutex_unlock},
+        {"pthread_mutex_trylock", (void *)my_pthread_mutex_trylock, (void **)&orig_pthread_mutex_trylock},
+        {"dispatch_once_f", (void *)my_dispatch_once_f, (void **)&orig_dispatch_once_f},
+        {"dispatch_semaphore_create", (void *)my_dispatch_semaphore_create, (void **)&orig_dispatch_semaphore_create},
+        {"dispatch_semaphore_wait", (void *)my_dispatch_semaphore_wait, (void **)&orig_dispatch_semaphore_wait},
+        {"dispatch_semaphore_signal", (void *)my_dispatch_semaphore_signal, (void **)&orig_dispatch_semaphore_signal},
+        {"dispatch_sync", (void *)my_dispatch_sync, (void **)&orig_dispatch_sync},
     };
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
 // ============================================================================
-// __interpose
+// __interpose (existing)
 // ============================================================================
 typedef struct interpose_s {
     void *new_func;
@@ -309,7 +642,6 @@ typedef struct interpose_s {
     __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
 
 static int my_printf(const char *format, ...);
-
 INTERPOSE(my_printf, printf)
 
 static int my_printf(const char *format, ...) {
@@ -324,7 +656,7 @@ static int my_printf(const char *format, ...) {
 }
 
 // ============================================================================
-// Environment checks
+// Environment checks (unchanged from original but kept)
 // ============================================================================
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
@@ -494,65 +826,22 @@ void perform_security_checks() {
 }
 
 // ============================================================================
-// دالة عرض التنبيه بالواجهة الرسومية التلقائية
-// ============================================================================
-void show_protection_alert() {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *rootViewController = nil;
-        
-        // محاولة جلب الـ Window Scene النشط في أنظمة iOS 13 فما فوق
-        if (@available(iOS 13.0, *)) {
-            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-                if (scene.activationState == UISceneActivationStateForegroundActive) {
-                    for (UIWindow *window in scene.windows) {
-                        if (window.isKeyWindow) {
-                            rootViewController = window.rootViewController;
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        
-        // طريقة بديلة متوافقة مع الإصدارات الأقدم من iOS 13
-        if (!rootViewController) {
-            rootViewController = [UIApplication sharedApplication].keyWindow.rootViewController;
-        }
-        
-        // إذا تم العثور على الواجهة يتم إظهار التنبيه فوراً
-        if (rootViewController) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنبيه"
-                                                                           message:@"تم تشغيل الحمايه"
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            
-            UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"موافق" 
-                                                               style:UIAlertActionStyleDefault 
-                                                             handler:nil];
-            [alert addAction:okAction];
-            [rootViewController presentViewController:alert animated:YES completion:nil];
-        } else {
-            NSLog(@"[Hook] لم يتم العثور على الواجهة الرئيسية لعرض التنبيه.");
-        }
-    });
-}
-
-// ============================================================================
-// Constructor
+// Modified Constructor with 20-second delay and banner
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
-    srand((unsigned int)time(NULL));
+    // Delay for 20 seconds
+    sleep(20);
     
-    // إعداد التوقيت لتأخير كل العمليات 20 ثانية (تنفذ في طابور المعالجة الرئيسي)
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSLog(@"[Hook] بدء تفعيل الخطافات والحماية بعد مرور 20 ثانية...");
-        
-        load_real_ptrace();
-        perform_security_checks(); // ملاحظة: إذا كان التطبيق في بيئة فحص أو جيلبريك ومستوى التهديد عالي سيتوقف التطبيق هنا تلقائياً
-        fishhook_bindings();
-        swizzle_objc_methods();
-        
-        // استدعاء التنبيه المرئي للمستخدم
-        show_protection_alert();
-    });
+    // Show banner
+    printf("\n========================================\n");
+    printf("        تم تشغيل الحمايه\n");
+    printf("       Security hooks activated\n");
+    printf("========================================\n\n");
+    
+    srand((unsigned int)time(NULL));
+    load_real_ptrace();
+    perform_security_checks();
+    fishhook_bindings();
+    swizzle_objc_methods();
 }
