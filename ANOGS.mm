@@ -1,9 +1,3 @@
-// ============================================================================
-// ANOGS.mm – الحماية المتكاملة مع تجاوز فحص التطبيقات والهوك
-// يتم تفعيلها بعد 50 ثانية مع عرض شعار "تم تشغيل الحمايه"
-// استبعاد الدوال التي تغير البيانات بشكل دائم (لا مسح للملفات ولا إلغاء تسجيل)
-// ============================================================================
-
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -18,28 +12,22 @@
 #import <sys/param.h>
 #import <sys/mount.h>
 #import <CommonCrypto/CommonCryptor.h>
+#import <CommonCrypto/CommonHMAC.h>
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
 #import <dispatch/dispatch.h>
-#import <sys/syscall.h>
-#import <netinet/in.h>
-#import <SystemConfiguration/SystemConfiguration.h>
-#import <mach/mach_time.h>
-#import <netdb.h>
+#import <UIKit/UIKit.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <LocalAuthentication/LocalAuthentication.h>
-#import <UIKit/UIKit.h>
 #endif
 
 #include "fishhook.h"
 
-// ============================================================================
-// ptrace
-// ============================================================================
+// ptrace – not available in iOS SDK, use dynamic lookup
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
@@ -49,9 +37,7 @@ static void load_real_ptrace(void) {
     }
 }
 
-// ============================================================================
-// Forward declarations (OpenSSL)
-// ============================================================================
+// Forward declarations for OpenSSL types (no headers needed)
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -62,7 +48,7 @@ typedef struct bio_st BIO;
 typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
 
 // ============================================================================
-// Original function pointers (من hook.mm)
+// Original function pointers
 // ============================================================================
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
@@ -73,15 +59,60 @@ static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address,
 static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
 static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
 static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+
+// Keychain
 static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
 static OSStatus (*orig_SecItemAdd)(CFDictionaryRef attributes, CFTypeRef *result);
 static OSStatus (*orig_SecItemUpdate)(CFDictionaryRef query, CFDictionaryRef attributesToUpdate);
 static OSStatus (*orig_SecItemDelete)(CFDictionaryRef query);
+
+// SecKey (original)
 static SecKeyRef (*orig_SecKeyCreateRandomKey)(CFDictionaryRef parameters, CFErrorRef *error);
 static SecKeyRef (*orig_SecKeyCopyPublicKey)(SecKeyRef key);
 static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error);
 static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error);
+
+// Additional Security.framework functions from شادو.txt
+static OSStatus (*orig_SecTrustEvaluate)(SecTrustRef trust, SecTrustResultType *result);
+static int (*orig_SecKeyRawVerify)(SecKeyRef key, SecPadding padding, const uint8_t *signedData, size_t signedDataLen, const uint8_t *signature, size_t signatureLen);
+static int (*orig_SecKeyRawSign)(SecKeyRef key, SecPadding padding, const uint8_t *hashToSign, size_t hashToSignLen, uint8_t *signedData, size_t *signedDataLen);
+static CFDataRef (*orig_SecKeyCreateEncryptedData)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef plaintext, CFErrorRef *error);
+static CFDataRef (*orig_SecKeyDecrypt)(SecKeyRef key, SecPadding padding, const uint8_t *cipherText, size_t cipherTextLen, size_t *plainTextLen);
+static CFDataRef (*orig_SecKeyEncrypt)(SecKeyRef key, SecPadding padding, const uint8_t *plainText, size_t plainTextLen, size_t *cipherTextLen);
+static OSStatus (*orig_SecPKCS12Import)(CFDataRef pkcs12_data, CFDictionaryRef options, CFArrayRef *items);
+static CFTypeRef (*orig_SecCertificateCopyKey)(SecCertificateRef certificate);
+static CFDataRef (*orig_SecCertificateCopyData)(SecCertificateRef certificate);
+static SecPolicyRef (*orig_SecPolicyCreateSSL)(Boolean server, CFStringRef hostname);
+static CFTypeRef (*orig_SecTrustCopyPublicKey)(SecTrustRef trust);
+static CFArrayRef (*orig_SecTrustCopyPolicies)(SecTrustRef trust);
+static CFIndex (*orig_SecTrustGetCertificateCount)(SecTrustRef trust);
+static SecCertificateRef (*orig_SecTrustGetCertificateAtIndex)(SecTrustRef trust, CFIndex ix);
+static CFDataRef (*orig_SecKeyCopyExternalRepresentation)(SecKeyRef key, CFErrorRef *error);
+static CFDictionaryRef (*orig_SecKeyCopyAttributes)(SecKeyRef key);
+static size_t (*orig_SecKeyGetBlockSize)(SecKeyRef key);
+
+// SSL / CFNetwork functions from شادو.txt
+typedef struct ssl_ctx_st SSLContextRef;
+typedef unsigned int SSLCipherSuite;
+static OSStatus (*orig_SSLHandshake)(SSLContextRef context);
+static OSStatus (*orig_SSLRead)(SSLContextRef context, void *data, size_t dataLength, size_t *processed);
+static OSStatus (*orig_SSLWrite)(SSLContextRef context, const void *data, size_t dataLength, size_t *processed);
+static OSStatus (*orig_SSLSetCertificate)(SSLContextRef context, CFArrayRef certs);
+static OSStatus (*orig_SSLCopyPeerTrust)(SSLContextRef context, SecTrustRef *trust);
+static OSStatus (*orig_SSLGetNegotiatedCipher)(SSLContextRef context, SSLCipherSuite *cipherSuite);
+static OSStatus (*orig_SSLSetPeerDomainName)(SSLContextRef context, const char *peerName, size_t peerNameLen);
+static OSStatus (*orig_SSLSetSessionOption)(SSLContextRef context, SSLSessionOption option, Boolean value);
+static OSStatus (*orig_SSLGetSessionState)(SSLContextRef context, SSLSessionState *state);
+static OSStatus (*orig_SSLClose)(SSLContextRef context);
+static Boolean (*orig_CFHostStartInfoResolution)(CFHostRef theHost, CFHostInfoType info, CFStreamError *error);
+static CFArrayRef (*orig_CFHostGetAddressing)(CFHostRef theHost, Boolean *hasBeenResolved);
+static CFArrayRef (*orig_CFNetworkCopySystemProxySettings)(void);
+static CFDictionaryRef (*orig_CFNetworkCopyProxiesForURL)(CFURLRef url, CFDictionaryRef proxySettings);
+
+// CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
+
+// OpenSSL
 static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
 static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
 static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
@@ -91,6 +122,8 @@ static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *bp, EVP_PKEY **x, pem_pass
 static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, int type);
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
+
+// Environment checks (original)
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -99,69 +132,22 @@ static bool (*orig_checkJailbreak)(void);
 static bool (*orig_hasCydia)(void);
 static bool (*orig_isJailbroken)(void);
 static bool (*orig_amIBeingDebugged)(void);
-static int (*orig_proc_regionfilename)(int pid, uint64_t address, char *buffer, uint32_t bufferSize);
-static int (*orig_task_info)(task_name_t target_task, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_count);
-static int (*orig_pid_for_task)(mach_port_t task, int *pid);
-static pid_t (*orig_getpid)(void);
-static uid_t (*orig_getuid)(void);
-static int (*orig_stat)(const char *path, struct stat *buf);
-static int (*orig_access)(const char *path, int mode);
-static int (*orig_kill)(pid_t pid, int sig);
-static long (*orig_syscall)(long number, ...);
-static int (*orig_ioctl)(int fildes, unsigned long request, ...);
-static uint32_t (*orig_dyld_image_count)(void);
-static const char* (*orig_dyld_get_image_name)(uint32_t image_index);
-static const struct mach_header* (*orig_dyld_get_image_header)(uint32_t image_index);
-static intptr_t (*orig_dyld_get_image_vmaddr_slide)(uint32_t image_index);
-static int (*orig_dladdr)(const void *addr, Dl_info *info);
-static void* (*orig_mmap)(void *addr, size_t len, int prot, int flags, int fd, off_t offset);
-static int (*orig_mprotect)(void *addr, size_t len, int prot);
-static int (*orig_munmap)(void *addr, size_t len);
-static int (*orig_vm_read)(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_offset_t *data, mach_msg_type_number_t *dataCnt);
-static int (*orig_vm_remap)(vm_map_t target_task, vm_address_t *address, vm_size_t size, vm_offset_t mask, int flags, vm_offset_t src_addr, boolean_t copy, vm_prot_t *protection, vm_prot_t *max_protection, vm_inherit_t inheritance);
-static int (*orig_mach_vm_region_recurse)(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t *size, natural_t *depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt);
-static int (*orig_mach_vm_remap)(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t size, mach_vm_offset_t mask, int flags, vm_map_t src_task, mach_vm_address_t src_address, boolean_t copy, vm_prot_t *cur_protection, vm_prot_t *max_protection, vm_inherit_t inheritance);
-static uint64_t (*orig_mach_absolute_time)(void);
-static kern_return_t (*orig_mach_timebase_info)(mach_timebase_info_t info);
-static mach_msg_return_t (*orig_mach_msg)(mach_msg_header_t *msg, mach_msg_option_t option, mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_name_t rcv_name, mach_msg_timeout_t timeout, mach_port_name_t notify);
-static mach_port_t (*orig_mig_get_reply_port)(void);
-static kern_return_t (*orig_vm_deallocate)(vm_map_t target_task, vm_address_t address, vm_size_t size);
-static kern_return_t (*orig_vm_copy)(vm_map_t target_task, vm_address_t source_address, vm_size_t size, vm_address_t dest_address);
-static SCNetworkReachabilityRef (*orig_SCNetworkReachabilityCreateWithAddress)(CFAllocatorRef allocator, const struct sockaddr *address);
-static SCNetworkReachabilityRef (*orig_SCNetworkReachabilityCreateWithName)(CFAllocatorRef allocator, const char *name);
-static Boolean (*orig_SCNetworkReachabilityGetFlags)(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags *flags);
-static Boolean (*orig_SCNetworkReachabilitySetCallback)(SCNetworkReachabilityRef target, SCNetworkReachabilityCallBack callout, SCNetworkReachabilityContext *context);
-static Boolean (*orig_SCNetworkReachabilityScheduleWithRunLoop)(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode);
-static Boolean (*orig_SCNetworkReachabilityUnscheduleFromRunLoop)(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode);
-static CFDictionaryRef (*orig_CFNetworkCopySystemProxySettings)(void);
-static int (*orig_connect)(int socket, const struct sockaddr *address, socklen_t address_len);
-static int (*orig_socket)(int domain, int type, int protocol);
-static int (*orig_setsockopt)(int socket, int level, int option_name, const void *option_value, socklen_t option_len);
-static int (*orig_getaddrinfo)(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res);
-static void (*orig_freeaddrinfo)(struct addrinfo *res);
-static const char* (*orig_inet_ntop)(int af, const void *src, char *dst, socklen_t size);
-static int (*orig_inet_pton)(int af, const char *src, void *dst);
-static CFUUIDRef (*orig_CFUUIDCreate)(CFAllocatorRef allocator);
-static CFStringRef (*orig_CFUUIDCreateString)(CFAllocatorRef allocator, CFUUIDRef uuid);
-static void (*orig_CFRelease)(CFTypeRef cf);
-static void (*orig_UIGraphicsBeginImageContextWithOptions)(CGSize size, BOOL opaque, CGFloat scale);
-static UIImage* (*orig_UIGraphicsGetImageFromCurrentImageContext)(void);
-static void (*orig_UIGraphicsEndImageContext)(void);
-static int (*orig_pthread_create)(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void*), void *arg);
-static pthread_t (*orig_pthread_self)(void);
-static int (*orig_pthread_setname_np)(const char *name);
-static int (*orig_pthread_getname_np)(pthread_t thread, char *name, size_t len);
-static int (*orig_pthread_mutex_lock)(pthread_mutex_t *mutex);
-static int (*orig_pthread_mutex_unlock)(pthread_mutex_t *mutex);
-static int (*orig_pthread_mutex_trylock)(pthread_mutex_t *mutex);
-static void (*orig_dispatch_once_f)(dispatch_once_t *predicate, void *context, dispatch_function_t function);
-static dispatch_semaphore_t (*orig_dispatch_semaphore_create)(long value);
-static long (*orig_dispatch_semaphore_wait)(dispatch_semaphore_t dsema, dispatch_time_t timeout);
-static long (*orig_dispatch_semaphore_signal)(dispatch_semaphore_t dsema);
-static void (*orig_dispatch_sync)(dispatch_queue_t queue, dispatch_block_t block);
+
+// Objective-C runtime hooks (passthrough)
+static id (*orig_objc_msgSend)(id self, SEL _cmd, ...);
+static id (*orig_objc_retain)(id obj);
+static void (*orig_objc_release)(id obj);
+static id (*orig_objc_autorelease)(id obj);
+static Class (*orig_objc_getClass)(const char *name);
+static const char *(*orig_sel_getName)(SEL sel);
+static IMP (*orig_method_getImplementation)(Method method);
+static void (*orig_method_setImplementation)(Method method, IMP imp);
+static void (*orig_method_exchangeImplementations)(Method m1, Method m2);
+static BOOL (*orig_class_addMethod)(Class cls, SEL name, IMP imp, const char *types);
+static IMP (*orig_class_replaceMethod)(Class cls, SEL name, IMP imp, const char *types);
 
 // ============================================================================
-// Replacement functions (من hook.mm)
+// Replacement functions (original)
 // ============================================================================
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
@@ -222,10 +208,21 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
-static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
-static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) { return errSecItemNotFound; }
-static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
+// Keychain replacements
+static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
+    return errSecItemNotFound;
+}
+static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
+    return errSecDuplicateItem;
+}
+static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
+    return errSecItemNotFound;
+}
+static OSStatus my_SecItemDelete(CFDictionaryRef query) {
+    return errSecSuccess;
+}
+
+// SecKey replacements (original)
 static SecKeyRef my_SecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) { return NULL; }
 static SecKeyRef my_SecKeyCopyPublicKey(SecKeyRef key) { return NULL; }
 static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error) {
@@ -234,6 +231,85 @@ static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorit
 static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error) {
     return true;
 }
+
+// Additional Security.framework replacements
+static OSStatus my_SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result) {
+    if (result) *result = kSecTrustResultProceed;
+    return errSecSuccess;
+}
+static int my_SecKeyRawVerify(SecKeyRef key, SecPadding padding, const uint8_t *signedData, size_t signedDataLen, const uint8_t *signature, size_t signatureLen) {
+    return 0; // 0 = success (verify passes)
+}
+static int my_SecKeyRawSign(SecKeyRef key, SecPadding padding, const uint8_t *hashToSign, size_t hashToSignLen, uint8_t *signedData, size_t *signedDataLen) {
+    if (signedData && signedDataLen) {
+        *signedDataLen = hashToSignLen;
+        memcpy(signedData, hashToSign, hashToSignLen);
+    }
+    return 0;
+}
+static CFDataRef my_SecKeyCreateEncryptedData(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef plaintext, CFErrorRef *error) {
+    return CFDataCreate(kCFAllocatorDefault, CFDataGetBytePtr(plaintext), CFDataGetLength(plaintext));
+}
+static CFDataRef my_SecKeyDecrypt(SecKeyRef key, SecPadding padding, const uint8_t *cipherText, size_t cipherTextLen, size_t *plainTextLen) {
+    if (plainTextLen) *plainTextLen = cipherTextLen;
+    return CFDataCreate(kCFAllocatorDefault, cipherText, cipherTextLen);
+}
+static CFDataRef my_SecKeyEncrypt(SecKeyRef key, SecPadding padding, const uint8_t *plainText, size_t plainTextLen, size_t *cipherTextLen) {
+    if (cipherTextLen) *cipherTextLen = plainTextLen;
+    return CFDataCreate(kCFAllocatorDefault, plainText, plainTextLen);
+}
+static OSStatus my_SecPKCS12Import(CFDataRef pkcs12_data, CFDictionaryRef options, CFArrayRef *items) {
+    if (items) *items = CFArrayCreate(kCFAllocatorDefault, NULL, 0, &kCFTypeArrayCallBacks);
+    return errSecSuccess;
+}
+static CFTypeRef my_SecCertificateCopyKey(SecCertificateRef certificate) { return NULL; }
+static CFDataRef my_SecCertificateCopyData(SecCertificateRef certificate) { return CFDataCreate(kCFAllocatorDefault, NULL, 0); }
+static SecPolicyRef my_SecPolicyCreateSSL(Boolean server, CFStringRef hostname) { return NULL; }
+static CFTypeRef my_SecTrustCopyPublicKey(SecTrustRef trust) { return NULL; }
+static CFArrayRef my_SecTrustCopyPolicies(SecTrustRef trust) { return NULL; }
+static CFIndex my_SecTrustGetCertificateCount(SecTrustRef trust) { return 0; }
+static SecCertificateRef my_SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex ix) { return NULL; }
+static CFDataRef my_SecKeyCopyExternalRepresentation(SecKeyRef key, CFErrorRef *error) {
+    return CFDataCreate(kCFAllocatorDefault, (const UInt8*)"fake_key_rep", 12);
+}
+static CFDictionaryRef my_SecKeyCopyAttributes(SecKeyRef key) { return NULL; }
+static size_t my_SecKeyGetBlockSize(SecKeyRef key) { return 256; }
+
+// SSL / CFNetwork replacements
+static OSStatus my_SSLHandshake(SSLContextRef context) { return errSecSuccess; }
+static OSStatus my_SSLRead(SSLContextRef context, void *data, size_t dataLength, size_t *processed) {
+    if (processed) *processed = 0;
+    return errSSLWouldBlock;
+}
+static OSStatus my_SSLWrite(SSLContextRef context, const void *data, size_t dataLength, size_t *processed) {
+    if (processed) *processed = dataLength;
+    return errSecSuccess;
+}
+static OSStatus my_SSLSetCertificate(SSLContextRef context, CFArrayRef certs) { return errSecSuccess; }
+static OSStatus my_SSLCopyPeerTrust(SSLContextRef context, SecTrustRef *trust) {
+    if (trust) *trust = NULL;
+    return errSecSuccess;
+}
+static OSStatus my_SSLGetNegotiatedCipher(SSLContextRef context, SSLCipherSuite *cipherSuite) {
+    if (cipherSuite) *cipherSuite = 0x1301;
+    return errSecSuccess;
+}
+static OSStatus my_SSLSetPeerDomainName(SSLContextRef context, const char *peerName, size_t peerNameLen) { return errSecSuccess; }
+static OSStatus my_SSLSetSessionOption(SSLContextRef context, SSLSessionOption option, Boolean value) { return errSecSuccess; }
+static OSStatus my_SSLGetSessionState(SSLContextRef context, SSLSessionState *state) {
+    if (state) *state = 0;
+    return errSecSuccess;
+}
+static OSStatus my_SSLClose(SSLContextRef context) { return errSecSuccess; }
+static Boolean my_CFHostStartInfoResolution(CFHostRef theHost, CFHostInfoType info, CFStreamError *error) { return true; }
+static CFArrayRef my_CFHostGetAddressing(CFHostRef theHost, Boolean *hasBeenResolved) {
+    if (hasBeenResolved) *hasBeenResolved = true;
+    return CFArrayCreate(kCFAllocatorDefault, NULL, 0, &kCFTypeArrayCallBacks);
+}
+static CFArrayRef my_CFNetworkCopySystemProxySettings(void) { return NULL; }
+static CFDictionaryRef my_CFNetworkCopyProxiesForURL(CFURLRef url, CFDictionaryRef proxySettings) { return NULL; }
+
+// CommonCrypto
 static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options,
                                   const void *key, size_t keyLength, const void *iv,
                                   const void *dataIn, size_t dataInLength,
@@ -245,6 +321,8 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     *dataOutMoved = bytes;
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
+
+// OpenSSL replacements
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
 static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     if (sig_len) *sig_len = 0;
@@ -257,6 +335,8 @@ static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_
 static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type) { return 1; }
 static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
 static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
+
+// Environment check replacements
 static bool my_is_jb(void) { return false; }
 static bool my_ROOTED(void) { return false; }
 static bool my_DEBUGGER_ATTACHED(void) { return false; }
@@ -266,123 +346,43 @@ static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
-// إضافات جديدة (حماية)
-static int my_proc_regionfilename(int pid, uint64_t address, char *buffer, uint32_t bufferSize) { return -1; }
-static int my_task_info(task_name_t target_task, task_flavor_t flavor, task_info_t task_info_out, mach_msg_type_number_t *task_info_count) {
-    return orig_task_info ? orig_task_info(target_task, flavor, task_info_out, task_info_count) : KERN_FAILURE;
+// Objective-C runtime passthrough replacements (do not break app)
+static id my_objc_msgSend(id self, SEL _cmd, ...) {
+    return orig_objc_msgSend ? orig_objc_msgSend(self, _cmd) : nil;
 }
-static int my_pid_for_task(mach_port_t task, int *pid) { return KERN_FAILURE; }
-static pid_t my_getpid(void) { return orig_getpid ? orig_getpid() : 0; }
-static uid_t my_getuid(void) { return 501; }
-static int my_stat(const char *path, struct stat *buf) {
-    if (path && (strstr(path, "/var/") || strstr(path, "/etc/apt") || strstr(path, "/usr/bin/ssh"))) return -1;
-    return orig_stat ? orig_stat(path, buf) : -1;
+static id my_objc_retain(id obj) { return orig_objc_retain ? orig_objc_retain(obj) : obj; }
+static void my_objc_release(id obj) { if (orig_objc_release) orig_objc_release(obj); }
+static id my_objc_autorelease(id obj) { return orig_objc_autorelease ? orig_objc_autorelease(obj) : obj; }
+static Class my_objc_getClass(const char *name) { return orig_objc_getClass ? orig_objc_getClass(name) : nil; }
+static const char *my_sel_getName(SEL sel) { return orig_sel_getName ? orig_sel_getName(sel) : sel_getName(sel); }
+static IMP my_method_getImplementation(Method method) { return orig_method_getImplementation ? orig_method_getImplementation(method) : NULL; }
+static void my_method_setImplementation(Method method, IMP imp) { if (orig_method_setImplementation) orig_method_setImplementation(method, imp); }
+static void my_method_exchangeImplementations(Method m1, Method m2) { if (orig_method_exchangeImplementations) orig_method_exchangeImplementations(m1, m2); }
+static BOOL my_class_addMethod(Class cls, SEL name, IMP imp, const char *types) {
+    return orig_class_addMethod ? orig_class_addMethod(cls, name, imp, types) : NO;
 }
-static int my_access(const char *path, int mode) {
-    if (path && (strstr(path, "/var/") || strstr(path, "Cydia") || strstr(path, "Substrate"))) return -1;
-    return orig_access ? orig_access(path, mode) : -1;
+static IMP my_class_replaceMethod(Class cls, SEL name, IMP imp, const char *types) {
+    return orig_class_replaceMethod ? orig_class_replaceMethod(cls, name, imp, types) : NULL;
 }
-static int my_kill(pid_t pid, int sig) {
-    if (pid == getpid()) return 0;
-    return orig_kill ? orig_kill(pid, sig) : -1;
-}
-static long my_syscall(long number, ...) {
-    if (number == SYS_ptrace || number == 26) return 0;
-    return 0;
-}
-static int my_ioctl(int fildes, unsigned long request, ...) { return -1; }
-static uint32_t my_dyld_image_count(void) { return orig_dyld_image_count ? orig_dyld_image_count() : 0; }
-static const char* my_dyld_get_image_name(uint32_t image_index) {
-    const char *name = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
-    if (name && (strstr(name, "Substrate") || strstr(name, "frida") || strstr(name, "cydia"))) return "";
-    return name;
-}
-static const struct mach_header* my_dyld_get_image_header(uint32_t image_index) { return orig_dyld_get_image_header ? orig_dyld_get_image_header(image_index) : NULL; }
-static intptr_t my_dyld_get_image_vmaddr_slide(uint32_t image_index) { return orig_dyld_get_image_vmaddr_slide ? orig_dyld_get_image_vmaddr_slide(image_index) : 0; }
-static int my_dladdr(const void *addr, Dl_info *info) { return 0; }
-static void* my_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset) { return orig_mmap ? orig_mmap(addr, len, prot, flags, fd, offset) : MAP_FAILED; }
-static int my_mprotect(void *addr, size_t len, int prot) { return orig_mprotect ? orig_mprotect(addr, len, prot) : -1; }
-static int my_munmap(void *addr, size_t len) { return orig_munmap ? orig_munmap(addr, len) : -1; }
-static int my_vm_read(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_offset_t *data, mach_msg_type_number_t *dataCnt) { return KERN_FAILURE; }
-static int my_vm_remap(vm_map_t target_task, vm_address_t *address, vm_size_t size, vm_offset_t mask, int flags, vm_offset_t src_addr, boolean_t copy, vm_prot_t *protection, vm_prot_t *max_protection, vm_inherit_t inheritance) { return KERN_FAILURE; }
-static int my_mach_vm_region_recurse(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t *size, natural_t *depth, vm_region_recurse_info_t info, mach_msg_type_number_t *infoCnt) { return KERN_FAILURE; }
-static int my_mach_vm_remap(vm_map_t target_task, mach_vm_address_t *address, mach_vm_size_t size, mach_vm_offset_t mask, int flags, vm_map_t src_task, mach_vm_address_t src_address, boolean_t copy, vm_prot_t *cur_protection, vm_prot_t *max_protection, vm_inherit_t inheritance) { return KERN_FAILURE; }
-static uint64_t my_mach_absolute_time(void) { return orig_mach_absolute_time ? orig_mach_absolute_time() : 0; }
-static kern_return_t my_mach_timebase_info(mach_timebase_info_t info) { return orig_mach_timebase_info ? orig_mach_timebase_info(info) : KERN_FAILURE; }
-static mach_msg_return_t my_mach_msg(mach_msg_header_t *msg, mach_msg_option_t option, mach_msg_size_t send_size, mach_msg_size_t rcv_size, mach_port_name_t rcv_name, mach_msg_timeout_t timeout, mach_port_name_t notify) {
-    return orig_mach_msg ? orig_mach_msg(msg, option, send_size, rcv_size, rcv_name, timeout, notify) : MACH_SEND_INVALID_DATA;
-}
-static mach_port_t my_mig_get_reply_port(void) { return orig_mig_get_reply_port ? orig_mig_get_reply_port() : MACH_PORT_NULL; }
-static kern_return_t my_vm_deallocate(vm_map_t target_task, vm_address_t address, vm_size_t size) { return orig_vm_deallocate ? orig_vm_deallocate(target_task, address, size) : KERN_FAILURE; }
-static kern_return_t my_vm_copy(vm_map_t target_task, vm_address_t source_address, vm_size_t size, vm_address_t dest_address) { return KERN_FAILURE; }
-static SCNetworkReachabilityRef my_SCNetworkReachabilityCreateWithAddress(CFAllocatorRef allocator, const struct sockaddr *address) {
-    return orig_SCNetworkReachabilityCreateWithAddress ? orig_SCNetworkReachabilityCreateWithAddress(allocator, address) : NULL;
-}
-static SCNetworkReachabilityRef my_SCNetworkReachabilityCreateWithName(CFAllocatorRef allocator, const char *name) {
-    return orig_SCNetworkReachabilityCreateWithName ? orig_SCNetworkReachabilityCreateWithName(allocator, name) : NULL;
-}
-static Boolean my_SCNetworkReachabilityGetFlags(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags *flags) {
-    if (flags) *flags = 0;
-    return false;
-}
-static Boolean my_SCNetworkReachabilitySetCallback(SCNetworkReachabilityRef target, SCNetworkReachabilityCallBack callout, SCNetworkReachabilityContext *context) { return false; }
-static Boolean my_SCNetworkReachabilityScheduleWithRunLoop(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode) { return false; }
-static Boolean my_SCNetworkReachabilityUnscheduleFromRunLoop(SCNetworkReachabilityRef target, CFRunLoopRef runLoop, CFStringRef runLoopMode) { return false; }
-static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) { return NULL; }
-static int my_connect(int socket, const struct sockaddr *address, socklen_t address_len) { return orig_connect ? orig_connect(socket, address, address_len) : -1; }
-static int my_socket(int domain, int type, int protocol) { return orig_socket ? orig_socket(domain, type, protocol) : -1; }
-static int my_setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len) { return orig_setsockopt ? orig_setsockopt(socket, level, option_name, option_value, option_len) : -1; }
-static int my_getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res) {
-    return orig_getaddrinfo ? orig_getaddrinfo(node, service, hints, res) : EAI_FAIL;
-}
-static void my_freeaddrinfo(struct addrinfo *res) { if (orig_freeaddrinfo) orig_freeaddrinfo(res); }
-static const char* my_inet_ntop(int af, const void *src, char *dst, socklen_t size) { return orig_inet_ntop ? orig_inet_ntop(af, src, dst, size) : NULL; }
-static int my_inet_pton(int af, const char *src, void *dst) { return orig_inet_pton ? orig_inet_pton(af, src, dst) : 0; }
-static CFUUIDRef my_CFUUIDCreate(CFAllocatorRef allocator) { return NULL; }
-static CFStringRef my_CFUUIDCreateString(CFAllocatorRef allocator, CFUUIDRef uuid) { return CFSTR("00000000-0000-0000-0000-000000000000"); }
-static void my_CFRelease(CFTypeRef cf) { if (orig_CFRelease) orig_CFRelease(cf); }
-static void my_UIGraphicsBeginImageContextWithOptions(CGSize size, BOOL opaque, CGFloat scale) { }
-static UIImage* my_UIGraphicsGetImageFromCurrentImageContext(void) { return nil; }
-static void my_UIGraphicsEndImageContext(void) { }
-static int my_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void*), void *arg) {
-    return orig_pthread_create ? orig_pthread_create(thread, attr, start_routine, arg) : -1;
-}
-static pthread_t my_pthread_self(void) { return orig_pthread_self ? orig_pthread_self() : 0; }
-static int my_pthread_setname_np(const char *name) {
-    if (name && strstr(name, "frida")) return 0;
-    return orig_pthread_setname_np ? orig_pthread_setname_np(name) : -1;
-}
-static int my_pthread_getname_np(pthread_t thread, char *name, size_t len) {
-    int ret = orig_pthread_getname_np ? orig_pthread_getname_np(thread, name, len) : -1;
-    if (ret == 0 && name && strstr(name, "frida")) memset(name, 0, len);
-    return ret;
-}
-static int my_pthread_mutex_lock(pthread_mutex_t *mutex) { return orig_pthread_mutex_lock ? orig_pthread_mutex_lock(mutex) : -1; }
-static int my_pthread_mutex_unlock(pthread_mutex_t *mutex) { return orig_pthread_mutex_unlock ? orig_pthread_mutex_unlock(mutex) : -1; }
-static int my_pthread_mutex_trylock(pthread_mutex_t *mutex) { return orig_pthread_mutex_trylock ? orig_pthread_mutex_trylock(mutex) : -1; }
-static void my_dispatch_once_f(dispatch_once_t *predicate, void *context, dispatch_function_t function) {
-    if (orig_dispatch_once_f) orig_dispatch_once_f(predicate, context, function);
-}
-static dispatch_semaphore_t my_dispatch_semaphore_create(long value) { return orig_dispatch_semaphore_create ? orig_dispatch_semaphore_create(value) : NULL; }
-static long my_dispatch_semaphore_wait(dispatch_semaphore_t dsema, dispatch_time_t timeout) { return orig_dispatch_semaphore_wait ? orig_dispatch_semaphore_wait(dsema, timeout) : 0; }
-static long my_dispatch_semaphore_signal(dispatch_semaphore_t dsema) { return orig_dispatch_semaphore_signal ? orig_dispatch_semaphore_signal(dsema) : 0; }
-static void my_dispatch_sync(dispatch_queue_t queue, dispatch_block_t block) { if (orig_dispatch_sync) orig_dispatch_sync(queue, block); }
 
 // ============================================================================
-// Objective-C swizzling (from hook.mm)
+// Objective-C swizzling (for UIDevice and LAContext)
 // ============================================================================
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
+
 static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy,
                                         NSString *localizedReason,
                                         void(^reply)(BOOL success, NSError *error)) {
     if (reply) reply(YES, nil);
 }
+
 static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) {
     return YES;
 }
+
 void swizzle_objc_methods() {
     Class deviceCls = objc_getClass("UIDevice");
     if (deviceCls) {
@@ -409,10 +409,161 @@ void swizzle_objc_methods() {
 }
 
 // ============================================================================
-// fishhook bindings (كاملة)
+// Fingerprint functions (added as requested)
+// ============================================================================
+static NSString* sessionFingerprint() {
+    NSString *uuid = [[NSUUID UUID] UUIDString];
+    NSString *time = [NSString stringWithFormat:@"%.0f", [[NSDate date] timeIntervalSince1970]*1000];
+    int magic = 106 + arc4random_uniform(1000000);
+    NSString *raw = [NSString stringWithFormat:@"%@|%@|%d|726", uuid, time, magic];
+    const char *key = [uuid UTF8String], *data = [raw UTF8String];
+    unsigned char hmac[CC_SHA256_DIGEST_LENGTH];
+    CCHmac(kCCHmacAlgSHA256, key, strlen(key), data, strlen(data), hmac);
+    NSMutableString *fp = [NSMutableString stringWithCapacity:64];
+    for (int i=0; i<CC_SHA256_DIGEST_LENGTH; i++) [fp appendFormat:@"%02x", hmac[i]];
+    return [fp substringToIndex:64];
+}
+
+static void saveFingerprint(NSString *fp) {
+    NSDictionary *query = @{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: @"com.anogs.bypass",
+        (id)kSecValueData: [fp dataUsingEncoding:NSUTF8StringEncoding]
+    };
+    SecItemDelete((CFDictionaryRef)query);
+    SecItemAdd((CFDictionaryRef)query, NULL);
+}
+
+static NSString* loadFingerprint() {
+    NSDictionary *query = @{
+        (id)kSecClass: (id)kSecClassGenericPassword,
+        (id)kSecAttrService: @"com.anogs.bypass",
+        (id)kSecReturnData: @YES,
+        (id)kSecMatchLimit: (id)kSecMatchLimitOne
+    };
+    CFDataRef data = NULL;
+    if (SecItemCopyMatching((CFDictionaryRef)query, (CFTypeRef *)&data) == errSecSuccess) {
+        NSString *fp = [[NSString alloc] initWithData:(__bridge NSData *)data encoding:NSUTF8StringEncoding];
+        CFRelease(data);
+        return fp;
+    }
+    return nil;
+}
+
+// ============================================================================
+// GUI for iOS 18 – shows fingerprint and allows saving
+// ============================================================================
+static void showFingerprintGUI(NSString *currentFP) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        // Create an alert controller with text field to display fingerprint
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"بصمة الجلسة"
+                                                                       message:@"تم إنشاء بصمة فريدة لهذه الجلسة"
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        
+        // Add text field to show fingerprint
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
+            textField.text = currentFP;
+            textField.placeholder = @"البصمة";
+            textField.enabled = NO; // read-only but can be copied
+            textField.font = [UIFont fontWithName:@"CourierNewPSMT" size:12];
+            textField.textAlignment = NSTextAlignmentCenter;
+        }];
+        
+        // Button to save fingerprint
+        UIAlertAction *saveAction = [UIAlertAction actionWithTitle:@"حفظ البصمة" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            saveFingerprint(currentFP);
+            // Show confirmation
+            UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"تم الحفظ"
+                                                                             message:@"تم حفظ البصمة في Keychain"
+                                                                      preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            UIWindow *keyWindow = nil;
+            if (@available(iOS 13.0, *)) {
+                for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                    if (scene.activationState == UISceneActivationStateForegroundActive) {
+                        keyWindow = scene.windows.firstObject;
+                        break;
+                    }
+                }
+            } else {
+                keyWindow = [UIApplication sharedApplication].keyWindow;
+            }
+            [keyWindow.rootViewController presentViewController:confirm animated:YES completion:nil];
+        }];
+        
+        // Button to load existing fingerprint
+        UIAlertAction *loadAction = [UIAlertAction actionWithTitle:@"تحميل بصمة محفوظة" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
+            NSString *saved = loadFingerprint();
+            if (saved) {
+                UIAlertController *showSaved = [UIAlertController alertControllerWithTitle:@"البصمة المحفوظة"
+                                                                                   message:saved
+                                                                            preferredStyle:UIAlertControllerStyleAlert];
+                [showSaved addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                UIWindow *keyWindow = nil;
+                if (@available(iOS 13.0, *)) {
+                    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                        if (scene.activationState == UISceneActivationStateForegroundActive) {
+                            keyWindow = scene.windows.firstObject;
+                            break;
+                        }
+                    }
+                } else {
+                    keyWindow = [UIApplication sharedApplication].keyWindow;
+                }
+                [keyWindow.rootViewController presentViewController:showSaved animated:YES completion:nil];
+            } else {
+                UIAlertController *noSaved = [UIAlertController alertControllerWithTitle:@"غير موجود"
+                                                                                 message:@"لا توجد بصمة محفوظة مسبقاً"
+                                                                          preferredStyle:UIAlertControllerStyleAlert];
+                [noSaved addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+                UIWindow *keyWindow = nil;
+                if (@available(iOS 13.0, *)) {
+                    for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                        if (scene.activationState == UISceneActivationStateForegroundActive) {
+                            keyWindow = scene.windows.firstObject;
+                            break;
+                        }
+                    }
+                } else {
+                    keyWindow = [UIApplication sharedApplication].keyWindow;
+                }
+                [keyWindow.rootViewController presentViewController:noSaved animated:YES completion:nil];
+            }
+        }];
+        
+        UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil];
+        
+        [alert addAction:saveAction];
+        [alert addAction:loadAction];
+        [alert addAction:cancelAction];
+        
+        // Get the topmost view controller
+        UIWindow *keyWindow = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive) {
+                    keyWindow = scene.windows.firstObject;
+                    break;
+                }
+            }
+        } else {
+            keyWindow = [UIApplication sharedApplication].keyWindow;
+        }
+        UIViewController *rootVC = keyWindow.rootViewController;
+        if (rootVC) {
+            [rootVC presentViewController:alert animated:YES completion:nil];
+        } else {
+            NSLog(@"No root view controller found to present fingerprint GUI");
+        }
+    });
+}
+
+// ============================================================================
+// fishhook bindings (all symbols)
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
+        // original hooks
         {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
         {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
         {"dlopen", (void *)my_dlopen, (void **)&orig_dlopen},
@@ -440,81 +591,71 @@ void fishhook_bindings() {
         {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
         {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
-        {"task_info", (void *)my_task_info, (void **)&orig_task_info},
-        {"pid_for_task", (void *)my_pid_for_task, (void **)&orig_pid_for_task},
-        {"getpid", (void *)my_getpid, (void **)&orig_getpid},
-        {"getuid", (void *)my_getuid, (void **)&orig_getuid},
-        {"stat", (void *)my_stat, (void **)&orig_stat},
-        {"access", (void *)my_access, (void **)&orig_access},
-        {"kill", (void *)my_kill, (void **)&orig_kill},
-        {"syscall", (void *)my_syscall, (void **)&orig_syscall},
-        {"ioctl", (void *)my_ioctl, (void **)&orig_ioctl},
-        {"dyld_image_count", (void *)my_dyld_image_count, (void **)&orig_dyld_image_count},
-        {"dyld_get_image_name", (void *)my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
-        {"dyld_get_image_header", (void *)my_dyld_get_image_header, (void **)&orig_dyld_get_image_header},
-        {"dyld_get_image_vmaddr_slide", (void *)my_dyld_get_image_vmaddr_slide, (void **)&orig_dyld_get_image_vmaddr_slide},
-        {"dladdr", (void *)my_dladdr, (void **)&orig_dladdr},
-        {"mmap", (void *)my_mmap, (void **)&orig_mmap},
-        {"mprotect", (void *)my_mprotect, (void **)&orig_mprotect},
-        {"munmap", (void *)my_munmap, (void **)&orig_munmap},
-        {"vm_read", (void *)my_vm_read, (void **)&orig_vm_read},
-        {"vm_remap", (void *)my_vm_remap, (void **)&orig_vm_remap},
-        {"mach_vm_region_recurse", (void *)my_mach_vm_region_recurse, (void **)&orig_mach_vm_region_recurse},
-        {"mach_vm_remap", (void *)my_mach_vm_remap, (void **)&orig_mach_vm_remap},
-        {"mach_absolute_time", (void *)my_mach_absolute_time, (void **)&orig_mach_absolute_time},
-        {"mach_timebase_info", (void *)my_mach_timebase_info, (void **)&orig_mach_timebase_info},
-        {"mach_msg", (void *)my_mach_msg, (void **)&orig_mach_msg},
-        {"mig_get_reply_port", (void *)my_mig_get_reply_port, (void **)&orig_mig_get_reply_port},
-        {"vm_deallocate", (void *)my_vm_deallocate, (void **)&orig_vm_deallocate},
-        {"vm_copy", (void *)my_vm_copy, (void **)&orig_vm_copy},
-        {"SCNetworkReachabilityCreateWithAddress", (void *)my_SCNetworkReachabilityCreateWithAddress, (void **)&orig_SCNetworkReachabilityCreateWithAddress},
-        {"SCNetworkReachabilityCreateWithName", (void *)my_SCNetworkReachabilityCreateWithName, (void **)&orig_SCNetworkReachabilityCreateWithName},
-        {"SCNetworkReachabilityGetFlags", (void *)my_SCNetworkReachabilityGetFlags, (void **)&orig_SCNetworkReachabilityGetFlags},
-        {"SCNetworkReachabilitySetCallback", (void *)my_SCNetworkReachabilitySetCallback, (void **)&orig_SCNetworkReachabilitySetCallback},
-        {"SCNetworkReachabilityScheduleWithRunLoop", (void *)my_SCNetworkReachabilityScheduleWithRunLoop, (void **)&orig_SCNetworkReachabilityScheduleWithRunLoop},
-        {"SCNetworkReachabilityUnscheduleFromRunLoop", (void *)my_SCNetworkReachabilityUnscheduleFromRunLoop, (void **)&orig_SCNetworkReachabilityUnscheduleFromRunLoop},
+        // additional Security framework hooks
+        {"SecTrustEvaluate", (void *)my_SecTrustEvaluate, (void **)&orig_SecTrustEvaluate},
+        {"SecKeyRawVerify", (void *)my_SecKeyRawVerify, (void **)&orig_SecKeyRawVerify},
+        {"SecKeyRawSign", (void *)my_SecKeyRawSign, (void **)&orig_SecKeyRawSign},
+        {"SecKeyCreateEncryptedData", (void *)my_SecKeyCreateEncryptedData, (void **)&orig_SecKeyCreateEncryptedData},
+        {"SecKeyDecrypt", (void *)my_SecKeyDecrypt, (void **)&orig_SecKeyDecrypt},
+        {"SecKeyEncrypt", (void *)my_SecKeyEncrypt, (void **)&orig_SecKeyEncrypt},
+        {"SecPKCS12Import", (void *)my_SecPKCS12Import, (void **)&orig_SecPKCS12Import},
+        {"SecCertificateCopyKey", (void *)my_SecCertificateCopyKey, (void **)&orig_SecCertificateCopyKey},
+        {"SecCertificateCopyData", (void *)my_SecCertificateCopyData, (void **)&orig_SecCertificateCopyData},
+        {"SecPolicyCreateSSL", (void *)my_SecPolicyCreateSSL, (void **)&orig_SecPolicyCreateSSL},
+        {"SecTrustCopyPublicKey", (void *)my_SecTrustCopyPublicKey, (void **)&orig_SecTrustCopyPublicKey},
+        {"SecTrustCopyPolicies", (void *)my_SecTrustCopyPolicies, (void **)&orig_SecTrustCopyPolicies},
+        {"SecTrustGetCertificateCount", (void *)my_SecTrustGetCertificateCount, (void **)&orig_SecTrustGetCertificateCount},
+        {"SecTrustGetCertificateAtIndex", (void *)my_SecTrustGetCertificateAtIndex, (void **)&orig_SecTrustGetCertificateAtIndex},
+        {"SecKeyCopyExternalRepresentation", (void *)my_SecKeyCopyExternalRepresentation, (void **)&orig_SecKeyCopyExternalRepresentation},
+        {"SecKeyCopyAttributes", (void *)my_SecKeyCopyAttributes, (void **)&orig_SecKeyCopyAttributes},
+        {"SecKeyGetBlockSize", (void *)my_SecKeyGetBlockSize, (void **)&orig_SecKeyGetBlockSize},
+        // SSL / CFNetwork hooks
+        {"SSLHandshake", (void *)my_SSLHandshake, (void **)&orig_SSLHandshake},
+        {"SSLRead", (void *)my_SSLRead, (void **)&orig_SSLRead},
+        {"SSLWrite", (void *)my_SSLWrite, (void **)&orig_SSLWrite},
+        {"SSLSetCertificate", (void *)my_SSLSetCertificate, (void **)&orig_SSLSetCertificate},
+        {"SSLCopyPeerTrust", (void *)my_SSLCopyPeerTrust, (void **)&orig_SSLCopyPeerTrust},
+        {"SSLGetNegotiatedCipher", (void *)my_SSLGetNegotiatedCipher, (void **)&orig_SSLGetNegotiatedCipher},
+        {"SSLSetPeerDomainName", (void *)my_SSLSetPeerDomainName, (void **)&orig_SSLSetPeerDomainName},
+        {"SSLSetSessionOption", (void *)my_SSLSetSessionOption, (void **)&orig_SSLSetSessionOption},
+        {"SSLGetSessionState", (void *)my_SSLGetSessionState, (void **)&orig_SSLGetSessionState},
+        {"SSLClose", (void *)my_SSLClose, (void **)&orig_SSLClose},
+        {"CFHostStartInfoResolution", (void *)my_CFHostStartInfoResolution, (void **)&orig_CFHostStartInfoResolution},
+        {"CFHostGetAddressing", (void *)my_CFHostGetAddressing, (void **)&orig_CFHostGetAddressing},
         {"CFNetworkCopySystemProxySettings", (void *)my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
-        {"connect", (void *)my_connect, (void **)&orig_connect},
-        {"socket", (void *)my_socket, (void **)&orig_socket},
-        {"setsockopt", (void *)my_setsockopt, (void **)&orig_setsockopt},
-        {"getaddrinfo", (void *)my_getaddrinfo, (void **)&orig_getaddrinfo},
-        {"freeaddrinfo", (void *)my_freeaddrinfo, (void **)&orig_freeaddrinfo},
-        {"inet_ntop", (void *)my_inet_ntop, (void **)&orig_inet_ntop},
-        {"inet_pton", (void *)my_inet_pton, (void **)&orig_inet_pton},
-        {"CFUUIDCreate", (void *)my_CFUUIDCreate, (void **)&orig_CFUUIDCreate},
-        {"CFUUIDCreateString", (void *)my_CFUUIDCreateString, (void **)&orig_CFUUIDCreateString},
-        {"CFRelease", (void *)my_CFRelease, (void **)&orig_CFRelease},
-        {"UIGraphicsBeginImageContextWithOptions", (void *)my_UIGraphicsBeginImageContextWithOptions, (void **)&orig_UIGraphicsBeginImageContextWithOptions},
-        {"UIGraphicsGetImageFromCurrentImageContext", (void *)my_UIGraphicsGetImageFromCurrentImageContext, (void **)&orig_UIGraphicsGetImageFromCurrentImageContext},
-        {"UIGraphicsEndImageContext", (void *)my_UIGraphicsEndImageContext, (void **)&orig_UIGraphicsEndImageContext},
-        {"pthread_create", (void *)my_pthread_create, (void **)&orig_pthread_create},
-        {"pthread_self", (void *)my_pthread_self, (void **)&orig_pthread_self},
-        {"pthread_setname_np", (void *)my_pthread_setname_np, (void **)&orig_pthread_setname_np},
-        {"pthread_getname_np", (void *)my_pthread_getname_np, (void **)&orig_pthread_getname_np},
-        {"pthread_mutex_lock", (void *)my_pthread_mutex_lock, (void **)&orig_pthread_mutex_lock},
-        {"pthread_mutex_unlock", (void *)my_pthread_mutex_unlock, (void **)&orig_pthread_mutex_unlock},
-        {"pthread_mutex_trylock", (void *)my_pthread_mutex_trylock, (void **)&orig_pthread_mutex_trylock},
-        {"dispatch_once_f", (void *)my_dispatch_once_f, (void **)&orig_dispatch_once_f},
-        {"dispatch_semaphore_create", (void *)my_dispatch_semaphore_create, (void **)&orig_dispatch_semaphore_create},
-        {"dispatch_semaphore_wait", (void *)my_dispatch_semaphore_wait, (void **)&orig_dispatch_semaphore_wait},
-        {"dispatch_semaphore_signal", (void *)my_dispatch_semaphore_signal, (void **)&orig_dispatch_semaphore_signal},
-        {"dispatch_sync", (void *)my_dispatch_sync, (void **)&orig_dispatch_sync},
+        {"CFNetworkCopyProxiesForURL", (void *)my_CFNetworkCopyProxiesForURL, (void **)&orig_CFNetworkCopyProxiesForURL},
+        // Objective-C runtime hooks (passthrough – safe)
+        {"objc_msgSend", (void *)my_objc_msgSend, (void **)&orig_objc_msgSend},
+        {"objc_retain", (void *)my_objc_retain, (void **)&orig_objc_retain},
+        {"objc_release", (void *)my_objc_release, (void **)&orig_objc_release},
+        {"objc_autorelease", (void *)my_objc_autorelease, (void **)&orig_objc_autorelease},
+        {"objc_getClass", (void *)my_objc_getClass, (void **)&orig_objc_getClass},
+        {"sel_getName", (void *)my_sel_getName, (void **)&orig_sel_getName},
+        {"method_getImplementation", (void *)my_method_getImplementation, (void **)&orig_method_getImplementation},
+        {"method_setImplementation", (void *)my_method_setImplementation, (void **)&orig_method_setImplementation},
+        {"method_exchangeImplementations", (void *)my_method_exchangeImplementations, (void **)&orig_method_exchangeImplementations},
+        {"class_addMethod", (void *)my_class_addMethod, (void **)&orig_class_addMethod},
+        {"class_replaceMethod", (void *)my_class_replaceMethod, (void **)&orig_class_replaceMethod},
     };
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
 // ============================================================================
-// __interpose (hook على printf)
+// __interpose (for printf filtering)
 // ============================================================================
 typedef struct interpose_s {
     void *new_func;
     void *orig_func;
 } interpose_t;
+
 #define INTERPOSE(new, orig) \
     __attribute__((used)) static const interpose_t interpose_##new \
     __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
+
 static int my_printf(const char *format, ...);
+
 INTERPOSE(my_printf, printf)
+
 static int my_printf(const char *format, ...) {
     if (strstr(format, "debug") || strstr(format, "jailbreak")) {
         return 0;
@@ -527,7 +668,7 @@ static int my_printf(const char *format, ...) {
 }
 
 // ============================================================================
-// دوال فحص البيئة (من hook.mm)
+// Environment checks (original security detection functions)
 // ============================================================================
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
@@ -540,6 +681,7 @@ int is_simulator() {
     return 0;
 #endif
 }
+
 int is_jailbroken_paths() {
     const char *paths[] = {
         "/Applications/Cydia.app",
@@ -561,6 +703,7 @@ int is_jailbroken_paths() {
     }
     return 0;
 }
+
 int is_cydia_installed() {
 #if TARGET_OS_IPHONE
     Class lsApplicationWorkspace = objc_getClass("LSApplicationWorkspace");
@@ -576,11 +719,13 @@ int is_cydia_installed() {
 #endif
     return 0;
 }
+
 int is_dyld_hijacked() {
     if (getenv("DYLD_INSERT_LIBRARIES") != NULL) return 1;
     if (getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL) return 1;
     return 0;
 }
+
 int is_debugger_attached() {
     int name[4];
     struct kinfo_proc info;
@@ -593,11 +738,13 @@ int is_debugger_attached() {
     if (sysctl(name, 4, &info, &info_size, NULL, 0) == -1) return 0;
     return (info.kp_proc.p_flag & P_TRACED) != 0;
 }
+
 int ptrace_deny_attach() {
     load_real_ptrace();
     if (!real_ptrace) return 1;
     return (real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1) ? 1 : 0;
 }
+
 int is_substrate_loaded() {
     uint32_t count = _dyld_image_count();
     for (uint32_t i = 0; i < count; i++) {
@@ -607,10 +754,12 @@ int is_substrate_loaded() {
     }
     return 0;
 }
+
 int is_ssh_running() { return (access("/usr/sbin/sshd", F_OK) == 0); }
 int is_apt_installed() { return (access("/etc/apt", F_OK) == 0); }
 int is_frida_installed() { return (access("/usr/sbin/frida-server", F_OK) == 0); }
 int is_debugserver_installed() { return (access("/Developer/usr/bin/debugserver", F_OK) == 0); }
+
 int check_provisioning() {
     FILE *fp = NULL;
     uint32_t size = 0;
@@ -636,6 +785,7 @@ int check_provisioning() {
     free(data);
     return is_debuggable;
 }
+
 int check_env() {
     const char *vars[] = {"DYLD_PRINT_TO_FILE", "DYLD_INSERT_LIBRARIES", "CFNETWORK_DIAGNOSTICS", "OBJC_DISABLE_VALIDATION", NULL};
     for (int i = 0; vars[i] != NULL; i++) {
@@ -643,6 +793,7 @@ int check_env() {
     }
     return 0;
 }
+
 int check_ppid() {
     pid_t ppid = getppid();
     char path[256];
@@ -658,9 +809,11 @@ int check_ppid() {
     }
     return 0;
 }
+
 int is_frida_loaded() {
     return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL);
 }
+
 void perform_security_checks() {
     int threat_level = 0;
     if (is_simulator()) threat_level += 10;
@@ -677,6 +830,7 @@ void perform_security_checks() {
     if (check_provisioning()) threat_level += 30;
     if (check_env()) threat_level += 10;
     if (check_ppid()) threat_level += 40;
+
     if (threat_level > 50) {
         usleep(rand() % 100000);
         _exit(1);
@@ -684,262 +838,56 @@ void perform_security_checks() {
 }
 
 // ============================================================================
+// Delayed initialization with 20 seconds, banner, and fingerprint GUI
 // ============================================================================
-// PART 2: أنظمة التجاوز والتمويه (من V12 مع حذف تغيير البيانات الدائم)
-// ============================================================================
-// ============================================================================
-
-#pragma mark - ExternalAppDetector (كشف فقط، لا حذف)
-@interface ExternalAppDetector : NSObject
-@property (strong, nonatomic) NSArray *forbiddenAppIdentifiers;
-- (BOOL)isExternalAppRunning:(NSString *)appIdentifier;
-- (BOOL)isTerminalAppInstalled;
-- (BOOL)isDebuggingToolPresent;
-- (void)hideExternalApps; // swizzling فقط، لا حذف ملفات
-@end
-
-@implementation ExternalAppDetector
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        self.forbiddenAppIdentifiers = @[
-            @"com.apple.Terminal", @"com.googlecode.iterm2", @"com.sublimetext.3",
-            @"com.microsoft.VSCode", @"com.hexrays.ida", @"com.hopperapp.hopper",
-            @"com.ollydbg.OllyDbg", @"org.wireshark.Wireshark", @"com.charles.Charles",
-            @"com.burpsuite.BurpSuite", @"com.frida.Frida", @"com.cydiasubstrate.Substrate",
-            @"org.coolstar.Sileo"
-        ];
-    }
-    return self;
-}
-- (BOOL)isExternalAppRunning:(NSString *)appIdentifier {
-    // استخدام NSWorkspace للتحقق (iOS لا يوجد NSWorkspace، لكن نتركه للـ Mac)
-#if TARGET_OS_OSX
-    NSArray *runningApps = [[NSWorkspace sharedWorkspace] runningApplications];
-    for (NSRunningApplication *app in runningApps) {
-        if ([[app bundleIdentifier] isEqualToString:appIdentifier]) return YES;
-    }
-#endif
-    // التحقق عبر sysctl للعمليات
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
-    size_t size;
-    sysctl(mib, 4, NULL, &size, NULL, 0);
-    struct kinfo_proc *procs = malloc(size);
-    if (procs) {
-        sysctl(mib, 4, procs, &size, NULL, 0);
-        int count = (int)(size / sizeof(struct kinfo_proc));
-        for (int i = 0; i < count; i++) {
-            NSString *procName = [NSString stringWithUTF8String:procs[i].kp_proc.p_comm];
-            if ([procName containsString:appIdentifier]) {
-                free(procs);
-                return YES;
-            }
-        }
-        free(procs);
-    }
-    return NO;
-}
-- (BOOL)isTerminalAppInstalled {
-    // فحص وجود ملفات طرفية (قراءة فقط)
-    return (access("/Applications/Utilities/Terminal.app", F_OK) == 0) ||
-           (access("/Applications/iTerm.app", F_OK) == 0);
-}
-- (BOOL)isDebuggingToolPresent {
-    return (access("/Applications/Xcode.app", F_OK) == 0) ||
-           (access("/usr/bin/lldb", F_OK) == 0) ||
-           (access("/usr/bin/gdb", F_OK) == 0);
-}
-- (void)hideExternalApps {
-    // فقط swizzling لـ NSWorkspace (تغيير في الذاكرة، غير دائم)
-    // تنبيه: NSWorkspace غير موجود في iOS، نتركه للـ Mac مع حماية
-#if TARGET_OS_OSX
-    Class wsClass = NSClassFromString(@"NSWorkspace");
-    if (wsClass) {
-        SEL sel = @selector(runningApplications);
-        Method m = class_getInstanceMethod(wsClass, sel);
-        if (m) {
-            IMP newImp = imp_implementationWithBlock(^NSArray *() {
-                // إرجاع قائمة فارغة من التطبيقات
-                return @[];
-            });
-            method_setImplementation(m, newImp);
-        }
-    }
-#endif
-}
-@end
-
-#pragma mark - SystemSpoofer (تمويه النظام في الذاكرة)
-@interface SystemSpoofer : NSObject
-- (void)spoofSystemProperties;
-@end
-@implementation SystemSpoofer
-- (void)spoofSystemProperties {
-    // تزوير إصدار النظام (method swizzling)
-    Method originalMethod = class_getInstanceMethod([NSProcessInfo class], @selector(operatingSystemVersion));
-    if (originalMethod) {
-        IMP fakeImplementation = imp_implementationWithBlock(^NSOperatingSystemVersion {
-            return (NSOperatingSystemVersion){.majorVersion = 15, .minorVersion = 0, .patchVersion = 0};
-        });
-        method_setImplementation(originalMethod, fakeImplementation);
-    }
-    // تزوير معرف الجهاز
-    Class deviceClass = NSClassFromString(@"UIDevice");
-    if (deviceClass) {
-        SEL sel = @selector(identifierForVendor);
-        Method m = class_getInstanceMethod(deviceClass, sel);
-        if (m) {
-            IMP newImp = imp_implementationWithBlock(^id(id self) {
-                return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
-            });
-            method_setImplementation(m, newImp);
-        }
-    }
-}
-@end
-
-#pragma mark - CommunicationInterceptor (اعتراض إشعارات النظام)
-@interface CommunicationInterceptor : NSObject
-- (void)interceptDistributedNotifications;
-@end
-@implementation CommunicationInterceptor
-- (void)interceptDistributedNotifications {
-    // تسجيل اعتراض إشعارات النظام (قراءة فقط، لا تعديل)
-    [[NSDistributedNotificationCenter defaultCenter] addObserver:self
-        selector:@selector(handleNotification:)
-        name:nil object:nil suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
-}
-- (void)handleNotification:(NSNotification *)notification {
-    NSString *name = notification.name;
-    NSArray *securityNotifications = @[
-        @"com.apple.security.assessment",
-        @"com.apple.security.scan",
-        @"com.game.anticheat.scan"
-    ];
-    if ([securityNotifications containsObject:name]) {
-        NSLog(@"[BYTEPASS] 🛡️ اعتراض فحص أمني: %@", name);
-        return; // منع وصول الإشعار
-    }
-    // تمرير الإشعارات الأخرى
-    [[NSDistributedNotificationCenter defaultCenter] postNotificationName:name object:notification.object];
-}
-@end
-
-#pragma mark - StealthSystemScanner (فحص مخفي للذاكرة)
-@interface StealthSystemScanner : NSObject
-- (void)stealthyScan;
-@end
-@implementation StealthSystemScanner
-- (void)stealthyScan {
-    // فحص مناطق الذاكرة المشبوهة (قراءة فقط)
-    vm_address_t address = 0;
-    vm_size_t size = 0;
-    natural_t depth = 0;
-    mach_port_t task = mach_task_self();
-    while (VM_REGION_TOP_INFO(task, &address, &size, &depth) == KERN_SUCCESS) {
-        // تحليل بسيط (يمكن إضافة منطق للكشف عن الحقن)
-        address += size;
-    }
-    NSLog(@"[BYTEPASS] 🔍 فحص الذاكرة المخفي اكتمل.");
-}
-@end
-
-#pragma mark - ProcessProtector (حماية العمليات بدون تغيير ملفات)
-@interface ProcessProtector : NSObject
-- (void)antiDebug;
-- (void)hideProcessFromTaskList;
-@end
-@implementation ProcessProtector
-- (void)antiDebug {
-    // ptrace منع التصحيح
-    ptrace(PT_DENY_ATTACH, 0, 0, 0);
-    syscall(SYS_ptrace, PT_DENY_ATTACH, 0, 0, 0);
-    // كشف الـ P_TRACED عن طريق sysctl (لنقم بتعطيله عبر hook موجود مسبقاً)
-    // ملاحظة: my_sysctl يقوم بالفعل بتعطيل P_TRACED
-}
-- (void)hideProcessFromTaskList {
-    // هذه التقنية معقدة وتتطلب patching لنواة المستخدم.
-    // نكتفي هنا بتعطيل sysctl و sysctlbyname (موجود بالفعل في hooks)
-}
-@end
-
-#pragma mark - SecureServerConnector (اتصال آمن، بدون حفظ بيانات)
-@interface SecureServerConnector : NSObject
-- (void)establishSecureConnection;
-@end
-@implementation SecureServerConnector
-- (void)establishSecureConnection {
-    // مجرد مثال لاتصال TLS (لن يتم تنفيذه فعلياً هنا)
-    NSLog(@"[BYTEPASS] 🌐 تم إعداد اتصال آمن (محاكاة)");
-}
-@end
-
-// ============================================================================
-// دالة عرض التنبيه (UIAlertController بعد 50 ثانية)
-// ============================================================================
-static void show_protection_alert(void) {
+static void delayed_init(void) {
+    // Show banner on screen and log
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIViewController *rootViewController = nil;
-        UIWindow *keyWindow = [UIApplication sharedApplication].keyWindow;
-        if (keyWindow) rootViewController = keyWindow.rootViewController;
-        if (!rootViewController) {
-            UIApplication *app = [UIApplication sharedApplication];
-            if ([app.delegate respondsToSelector:@selector(window)]) {
-                UIWindow *delegateWindow = [app.delegate performSelector:@selector(window)];
-                if (delegateWindow) rootViewController = delegateWindow.rootViewController;
+        NSLog(@"✅ تم تشغيل الحمايه");
+        UIWindow *keyWindow = nil;
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive) {
+                    keyWindow = scene.windows.firstObject;
+                    break;
+                }
             }
-        }
-        if (rootViewController) {
-            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"تنبيه"
-                                                                           message:@"تم تشغيل الحمايه"
-                                                                    preferredStyle:UIAlertControllerStyleAlert];
-            UIAlertAction *okAction = [UIAlertAction actionWithTitle:@"موافق" style:UIAlertActionStyleDefault handler:nil];
-            [alert addAction:okAction];
-            [rootViewController presentViewController:alert animated:YES completion:nil];
         } else {
-            NSLog(@"[Hook] لم يتم العثور على الواجهة الرئيسية لعرض التنبيه.");
+            keyWindow = [UIApplication sharedApplication].keyWindow;
         }
+        UIViewController *rootVC = keyWindow.rootViewController;
+        if (rootVC) {
+            UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"الحماية" 
+                                                                           message:@"تم تشغيل الحمايه" 
+                                                                    preferredStyle:UIAlertControllerStyleAlert];
+            [alert addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
+            [rootVC presentViewController:alert animated:YES completion:nil];
+        } else {
+            printf("\n\n********** تم تشغيل الحمايه **********\n\n");
+        }
+    });
+    
+    // Activate all protection hooks
+    perform_security_checks();
+    fishhook_bindings();
+    swizzle_objc_methods();
+    
+    // Generate and show fingerprint GUI after a short delay (so that UI is ready)
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSString *fp = sessionFingerprint();
+        showFingerprintGUI(fp);
     });
 }
 
 // ============================================================================
-// Constructor النهائي (بعد 50 ثانية)
+// Constructor – delayed by 20 seconds
 // ============================================================================
 __attribute__((constructor))
-void init_hook() {
+void init_hook(void) {
     srand((unsigned int)time(NULL));
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSLog(@"[EXTERNAL BYPASS] 🚀 تهيئة نظام تجاوز الفحص بعد 50 ثانية");
-        
-        // 1. تشغيل hooks الأساسية
-        load_real_ptrace();
-        perform_security_checks();
-        fishhook_bindings();
-        swizzle_objc_methods();
-        
-        // 2. أنظمة الكشف والإخفاء (بدون تعديل دائم)
-        ExternalAppDetector *detector = [ExternalAppDetector new];
-        [detector hideExternalApps];
-        
-        SystemSpoofer *spoofer = [SystemSpoofer new];
-        [spoofer spoofSystemProperties];
-        
-        CommunicationInterceptor *interceptor = [CommunicationInterceptor new];
-        [interceptor interceptDistributedNotifications];
-        
-        StealthSystemScanner *scanner = [StealthSystemScanner new];
-        [scanner stealthyScan];
-        
-        ProcessProtector *protector = [ProcessProtector new];
-        [protector antiDebug];
-        [protector hideProcessFromTaskList];
-        
-        SecureServerConnector *connector = [SecureServerConnector new];
-        [connector establishSecureConnection];
-        
-        // 3. عرض التنبيه
-        show_protection_alert();
-        
-        NSLog(@"[EXTERNAL BYPASS] ✅ جميع أنظمة الحماية نشطة");
+    load_real_ptrace();
+    // Delay the actual hooking and security checks by 20 seconds
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        delayed_init();
     });
 }
