@@ -7,6 +7,7 @@
 #import <sys/utsname.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <mach/mach_time.h>
 #import <mach-o/dyld.h>
 #import <TargetConditionals.h>
 #import <sys/param.h>
@@ -25,6 +26,15 @@
 #endif
 
 #include "fishhook.h"
+
+// تعريف SYS_ptrace لـ arm64 إذا لم يكن موجوداً
+#ifndef SYS_ptrace
+    #ifdef __arm64__
+        #define SYS_ptrace 117
+    #else
+        #define SYS_ptrace 26
+    #endif
+#endif
 
 // ============================================================================
 // حماية ptrace عبر استدعاء ديناميكي
@@ -50,7 +60,7 @@ static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void
     int ret = orig_sysctl ? orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen) : 0;
     if (ret == 0 && oldp && namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC && name[2] == KERN_PROC_PID) {
         struct kinfo_proc *kp = (struct kinfo_proc *)oldp;
-        kp->kp_proc.p_flag &= ~P_TRACED;  // إخفاء أثر المصحح
+        kp->kp_proc.p_flag &= ~P_TRACED;
     }
     return ret;
 }
@@ -64,7 +74,6 @@ static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *
     return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : 0;
 }
 
-// دوال أخرى للتحقق من البيئة (تُرجع قيماً سليمة)
 static int (*orig_proc_regionfilename)(int, uint64_t, void *, uint32_t);
 static int my_proc_regionfilename(int pid, uint64_t address, void *buffer, uint32_t bufferSize) { return -1; }
 
@@ -90,7 +99,6 @@ static int my_stat(const char *path, struct stat *buf) {
 
 static int (*orig_access)(const char *, int);
 static int my_access(const char *path, int mode) {
-    // منع الوصول إلى مسارات الجيلبريك إذا طلبها التطبيق
     const char *jbPaths[] = {"/Applications/Cydia.app", "/bin/bash", "/usr/sbin/sshd", "/etc/apt", NULL};
     for (int i = 0; jbPaths[i]; i++) {
         if (strcmp(path, jbPaths[i]) == 0) return -1;
@@ -101,7 +109,7 @@ static int my_access(const char *path, int mode) {
 static int (*orig_kill)(pid_t, int);
 static int my_kill(pid_t pid, int sig) {
     if (pid == getpid() && (sig == SIGSTOP || sig == SIGTRAP))
-        return 0;  // تجاهل إشارات التصحيح
+        return 0;
     return orig_kill ? orig_kill(pid, sig) : kill(pid, sig);
 }
 
@@ -114,14 +122,12 @@ static long my_syscall(long number, ...) {
 static int (*orig_ioctl)(int, unsigned long, ...);
 static int my_ioctl(int fd, unsigned long request, ...) { return -1; }
 
-// دوال dyld
 static uint32_t (*orig_dyld_image_count)(void);
 static uint32_t my_dyld_image_count(void) { return orig_dyld_image_count ? orig_dyld_image_count() : 0; }
 
 static const char* (*orig_dyld_get_image_name)(uint32_t);
 static const char* my_dyld_get_image_name(uint32_t index) {
-    if (orig_dyld_get_image_name) return orig_dyld_get_image_name(index);
-    return NULL;
+    return orig_dyld_get_image_name ? orig_dyld_get_image_name(index) : NULL;
 }
 
 static const struct mach_header* (*orig_dyld_get_image_header)(uint32_t);
@@ -132,7 +138,6 @@ static const struct mach_header* my_dyld_get_image_header(uint32_t index) {
 static intptr_t (*orig_dyld_get_image_vmaddr_slide)(uint32_t);
 static intptr_t my_dyld_get_image_vmaddr_slide(uint32_t index) { return 0; }
 
-// dlopen / dlsym
 static void* (*orig_dlopen)(const char *, int);
 static void* my_dlopen(const char *path, int mode) {
     if (path && (strstr(path, "frida") || strstr(path, "substrate"))) return NULL;
@@ -149,7 +154,6 @@ static void* my_dlsym(void *handle, const char *symbol) {
 static int (*orig_dladdr)(const void *, Dl_info *);
 static int my_dladdr(const void *addr, Dl_info *info) { return 0; }
 
-// دوال الذاكرة (تعيد أخطاء بدلاً من تعديل البيانات)
 static void* (*orig_mmap)(void *, size_t, int, int, int, off_t);
 static void* my_mmap(void *addr, size_t len, int prot, int flags, int fd, off_t offset) {
     if (flags & MAP_JIT) flags &= ~MAP_JIT;
@@ -196,7 +200,6 @@ static kern_return_t my_mach_vm_remap(vm_map_t target_task, mach_vm_address_t *a
     return KERN_FAILURE;
 }
 
-// دوال الوقت
 static uint64_t (*orig_mach_absolute_time)(void);
 static uint64_t my_mach_absolute_time(void) {
     return orig_mach_absolute_time ? orig_mach_absolute_time() : 0;
@@ -223,7 +226,6 @@ static kern_return_t my_vm_deallocate(vm_map_t task, vm_address_t address, vm_si
 static kern_return_t (*orig_vm_copy)(vm_map_t, vm_address_t, vm_size_t, vm_address_t);
 static kern_return_t my_vm_copy(vm_map_t task, vm_address_t src, vm_size_t size, vm_address_t dst) { return KERN_FAILURE; }
 
-// دوال الشبكة (SystemConfiguration)
 static SCNetworkReachabilityRef (*orig_SCNetworkReachabilityCreateWithAddress)(CFAllocatorRef, const struct sockaddr *);
 static SCNetworkReachabilityRef my_SCNetworkReachabilityCreateWithAddress(CFAllocatorRef allocator, const struct sockaddr *address) {
     return NULL;
@@ -258,7 +260,6 @@ static Boolean my_SCNetworkReachabilityUnscheduleFromRunLoop(SCNetworkReachabili
 static CFArrayRef (*orig_CFNetworkCopySystemProxySettings)(void);
 static CFArrayRef my_CFNetworkCopySystemProxySettings(void) { return NULL; }
 
-// دوال المقابس
 static int (*orig_connect)(int, const struct sockaddr *, socklen_t);
 static int my_connect(int socket, const struct sockaddr *address, socklen_t address_len) { return -1; }
 
@@ -269,7 +270,7 @@ static int my_socket(int domain, int type, int protocol) {
 
 static int (*orig_setsockopt)(int, int, int, const void *, socklen_t);
 static int my_setsockopt(int socket, int level, int option_name, const void *option_value, socklen_t option_len) {
-    if (level == SOL_SOCKET && (option_name == SO_DEBUG || option_name == SO_DETACH)) return 0;
+    if (level == SOL_SOCKET && option_name == SO_DEBUG) return 0;
     return orig_setsockopt ? orig_setsockopt(socket, level, option_name, option_value, option_len) : -1;
 }
 
@@ -290,7 +291,6 @@ static const char* my_inet_ntop(int af, const void *src, char *dst, socklen_t si
 static int (*orig_inet_pton)(int, const char *, void *);
 static int my_inet_pton(int af, const char *src, void *dst) { return 0; }
 
-// Keychain (آمن - عدم تخزين/قراءة)
 static OSStatus (*orig_SecItemAdd)(CFDictionaryRef, CFTypeRef *);
 static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
 
@@ -300,7 +300,6 @@ static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result)
 static OSStatus (*orig_SecItemDelete)(CFDictionaryRef);
 static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
 
-// دوال CFUUID و CoreFoundation
 static CFUUIDRef (*orig_CFUUIDCreate)(CFAllocatorRef);
 static CFUUIDRef my_CFUUIDCreate(CFAllocatorRef allocator) { return NULL; }
 
@@ -312,7 +311,6 @@ static CFStringRef my_CFUUIDCreateString(CFAllocatorRef allocator, CFUUIDRef uui
 static void (*orig_CFRelease)(CFTypeRef);
 static void my_CFRelease(CFTypeRef cf) { if (orig_CFRelease) orig_CFRelease(cf); }
 
-// دوال واجهة المستخدم (منع تصوير الشاشة)
 static void (*orig_UIGraphicsBeginImageContextWithOptions)(CGSize, BOOL, CGFloat);
 static void my_UIGraphicsBeginImageContextWithOptions(CGSize size, BOOL opaque, CGFloat scale) { }
 
@@ -322,7 +320,6 @@ static UIImage* my_UIGraphicsGetImageFromCurrentImageContext(void) { return nil;
 static void (*orig_UIGraphicsEndImageContext)(void);
 static void my_UIGraphicsEndImageContext(void) { }
 
-// دوال pthread
 static int (*orig_pthread_create)(pthread_t *, const pthread_attr_t *, void *(*)(void *), void *);
 static int my_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void *(*start_routine)(void *), void *arg) {
     return orig_pthread_create ? orig_pthread_create(thread, attr, start_routine, arg) : EAGAIN;
@@ -346,7 +343,6 @@ static int my_pthread_mutex_unlock(pthread_mutex_t *mutex) { return orig_pthread
 static int (*orig_pthread_mutex_trylock)(pthread_mutex_t *);
 static int my_pthread_mutex_trylock(pthread_mutex_t *mutex) { return 0; }
 
-// دوال GCD
 static void (*orig_dispatch_once_f)(dispatch_once_t *, void *, void (*)(void *));
 static void my_dispatch_once_f(dispatch_once_t *predicate, void *context, void (*function)(void *)) {
     if (orig_dispatch_once_f) orig_dispatch_once_f(predicate, context, function);
@@ -366,7 +362,6 @@ static void my_dispatch_sync(dispatch_queue_t queue, dispatch_block_t block) {
     if (orig_dispatch_sync) orig_dispatch_sync(queue, block);
 }
 
-// دوال Objective-C (تمرير آمن)
 static id (*orig_objc_msgSend)(id, SEL, ...);
 static id my_objc_msgSend(id self, SEL _cmd, ...) {
     return orig_objc_msgSend ? orig_objc_msgSend(self, _cmd) : nil;
@@ -412,9 +407,6 @@ static SEL my_NSSelectorFromString(NSString *str) { return NSSelectorFromString(
 static Class (*orig_NSClassFromString)(NSString *);
 static Class my_NSClassFromString(NSString *str) { return NSClassFromString(str); }
 
-// ============================================================================
-// دوال الحماية الإضافية من القائمة (تجاهل دوال البيانات)
-// ============================================================================
 static void (*orig_NSLog)(NSString *, ...);
 static void my_NSLog(NSString *format, ...) {
     if (format && (strstr([format UTF8String], "jailbreak") || strstr([format UTF8String], "debug")))
@@ -560,7 +552,6 @@ void fishhook_bindings(void) {
 // ============================================================================
 __attribute__((constructor))
 void init_hook(void) {
-    // تأخير 35 ثانية ثم عرض UIAlertController
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(35 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         UIWindow *window = [UIApplication sharedApplication].keyWindow;
         UIViewController *rootVC = window.rootViewController;
@@ -575,6 +566,5 @@ void init_hook(void) {
         }
     });
     
-    // ربط الفيشوك فوراً
     fishhook_bindings();
 }
