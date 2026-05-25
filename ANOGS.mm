@@ -750,8 +750,8 @@ void init_hook() {
     srand((unsigned int)time(NULL));
     
     // تأخير 20 ثانية قبل تفعيل أي شيء
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSLog(@"[Hook] بدء تفعيل الخطافات والحماية بعد مرور 20 ثانية...");
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(50 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        NSLog(@"[Hook] بدء تفعيل الخطافات والحماية بعد مرور 50 ثانية...");
         
         load_real_ptrace();
         perform_security_checks(); // إذا كان مستوى التهديد عالي سينهي التطبيق
