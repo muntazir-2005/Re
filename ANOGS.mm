@@ -19,7 +19,8 @@
 #import <sys/syscall.h>
 #import <netinet/in.h>
 #import <SystemConfiguration/SystemConfiguration.h>
-
+#import <mach/mach_time.h>      // <-- يصلح خطأ mach_timebase_info_t
+#import <netdb.h>               // <-- يصلح خطأ EAI_FAIL
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
 #import <objc/message.h>
