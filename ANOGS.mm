@@ -15,6 +15,7 @@
 #import <CommonCrypto/CommonHMAC.h>
 #import <Security/Security.h>
 #import <Security/SecKey.h>
+#import <Security/SecureTransport.h>   // هذا يعرف SSLContextRef و SSLCipherSuite و SSLSessionState
 #import <time.h>
 #import <dispatch/dispatch.h>
 #import <UIKit/UIKit.h>
@@ -72,7 +73,7 @@ static SecKeyRef (*orig_SecKeyCopyPublicKey)(SecKeyRef key);
 static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error);
 static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error);
 
-// Additional Security.framework functions from شادو.txt
+// Additional Security.framework functions
 static OSStatus (*orig_SecTrustEvaluate)(SecTrustRef trust, SecTrustResultType *result);
 static int (*orig_SecKeyRawVerify)(SecKeyRef key, SecPadding padding, const uint8_t *signedData, size_t signedDataLen, const uint8_t *signature, size_t signatureLen);
 static int (*orig_SecKeyRawSign)(SecKeyRef key, SecPadding padding, const uint8_t *hashToSign, size_t hashToSignLen, uint8_t *signedData, size_t *signedDataLen);
@@ -91,9 +92,7 @@ static CFDataRef (*orig_SecKeyCopyExternalRepresentation)(SecKeyRef key, CFError
 static CFDictionaryRef (*orig_SecKeyCopyAttributes)(SecKeyRef key);
 static size_t (*orig_SecKeyGetBlockSize)(SecKeyRef key);
 
-// SSL / CFNetwork functions from شادو.txt
-typedef struct ssl_ctx_st SSLContextRef;
-typedef unsigned int SSLCipherSuite;
+// SSL / CFNetwork functions (types are now from SecureTransport.h)
 static OSStatus (*orig_SSLHandshake)(SSLContextRef context);
 static OSStatus (*orig_SSLRead)(SSLContextRef context, void *data, size_t dataLength, size_t *processed);
 static OSStatus (*orig_SSLWrite)(SSLContextRef context, const void *data, size_t dataLength, size_t *processed);
@@ -123,7 +122,7 @@ static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, i
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Environment checks (original)
+// Environment checks
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -133,7 +132,7 @@ static bool (*orig_hasCydia)(void);
 static bool (*orig_isJailbroken)(void);
 static bool (*orig_amIBeingDebugged)(void);
 
-// Objective-C runtime hooks (passthrough)
+// Objective-C runtime hooks
 static id (*orig_objc_msgSend)(id self, SEL _cmd, ...);
 static id (*orig_objc_retain)(id obj);
 static void (*orig_objc_release)(id obj);
@@ -147,7 +146,7 @@ static BOOL (*orig_class_addMethod)(Class cls, SEL name, IMP imp, const char *ty
 static IMP (*orig_class_replaceMethod)(Class cls, SEL name, IMP imp, const char *types);
 
 // ============================================================================
-// Replacement functions (original)
+// Replacement functions
 // ============================================================================
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
@@ -208,21 +207,13 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain replacements
-static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
-    return errSecItemNotFound;
-}
-static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
-    return errSecDuplicateItem;
-}
-static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
-    return errSecItemNotFound;
-}
-static OSStatus my_SecItemDelete(CFDictionaryRef query) {
-    return errSecSuccess;
-}
+// Keychain
+static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
+static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
+static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) { return errSecItemNotFound; }
+static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
 
-// SecKey replacements (original)
+// SecKey
 static SecKeyRef my_SecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) { return NULL; }
 static SecKeyRef my_SecKeyCopyPublicKey(SecKeyRef key) { return NULL; }
 static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error) {
@@ -232,14 +223,12 @@ static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm
     return true;
 }
 
-// Additional Security.framework replacements
+// Additional Security
 static OSStatus my_SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result) {
     if (result) *result = kSecTrustResultProceed;
     return errSecSuccess;
 }
-static int my_SecKeyRawVerify(SecKeyRef key, SecPadding padding, const uint8_t *signedData, size_t signedDataLen, const uint8_t *signature, size_t signatureLen) {
-    return 0; // 0 = success (verify passes)
-}
+static int my_SecKeyRawVerify(SecKeyRef key, SecPadding padding, const uint8_t *signedData, size_t signedDataLen, const uint8_t *signature, size_t signatureLen) { return 0; }
 static int my_SecKeyRawSign(SecKeyRef key, SecPadding padding, const uint8_t *hashToSign, size_t hashToSignLen, uint8_t *signedData, size_t *signedDataLen) {
     if (signedData && signedDataLen) {
         *signedDataLen = hashToSignLen;
@@ -269,13 +258,11 @@ static CFTypeRef my_SecTrustCopyPublicKey(SecTrustRef trust) { return NULL; }
 static CFArrayRef my_SecTrustCopyPolicies(SecTrustRef trust) { return NULL; }
 static CFIndex my_SecTrustGetCertificateCount(SecTrustRef trust) { return 0; }
 static SecCertificateRef my_SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex ix) { return NULL; }
-static CFDataRef my_SecKeyCopyExternalRepresentation(SecKeyRef key, CFErrorRef *error) {
-    return CFDataCreate(kCFAllocatorDefault, (const UInt8*)"fake_key_rep", 12);
-}
+static CFDataRef my_SecKeyCopyExternalRepresentation(SecKeyRef key, CFErrorRef *error) { return CFDataCreate(kCFAllocatorDefault, (const UInt8*)"fake_key_rep", 12); }
 static CFDictionaryRef my_SecKeyCopyAttributes(SecKeyRef key) { return NULL; }
 static size_t my_SecKeyGetBlockSize(SecKeyRef key) { return 256; }
 
-// SSL / CFNetwork replacements
+// SSL / CFNetwork
 static OSStatus my_SSLHandshake(SSLContextRef context) { return errSecSuccess; }
 static OSStatus my_SSLRead(SSLContextRef context, void *data, size_t dataLength, size_t *processed) {
     if (processed) *processed = 0;
@@ -297,7 +284,7 @@ static OSStatus my_SSLGetNegotiatedCipher(SSLContextRef context, SSLCipherSuite 
 static OSStatus my_SSLSetPeerDomainName(SSLContextRef context, const char *peerName, size_t peerNameLen) { return errSecSuccess; }
 static OSStatus my_SSLSetSessionOption(SSLContextRef context, SSLSessionOption option, Boolean value) { return errSecSuccess; }
 static OSStatus my_SSLGetSessionState(SSLContextRef context, SSLSessionState *state) {
-    if (state) *state = 0;
+    if (state) *state = kSSLIdle;   // استخدم الثابت الصحيح بدلاً من 0
     return errSecSuccess;
 }
 static OSStatus my_SSLClose(SSLContextRef context) { return errSecSuccess; }
@@ -322,7 +309,7 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// OpenSSL replacements
+// OpenSSL
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
 static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     if (sig_len) *sig_len = 0;
@@ -336,7 +323,7 @@ static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int ty
 static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
 static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
 
-// Environment check replacements
+// Environment checks
 static bool my_is_jb(void) { return false; }
 static bool my_ROOTED(void) { return false; }
 static bool my_DEBUGGER_ATTACHED(void) { return false; }
@@ -346,10 +333,8 @@ static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
-// Objective-C runtime passthrough replacements (do not break app)
-static id my_objc_msgSend(id self, SEL _cmd, ...) {
-    return orig_objc_msgSend ? orig_objc_msgSend(self, _cmd) : nil;
-}
+// Objective-C passthrough
+static id my_objc_msgSend(id self, SEL _cmd, ...) { return orig_objc_msgSend ? orig_objc_msgSend(self, _cmd) : nil; }
 static id my_objc_retain(id obj) { return orig_objc_retain ? orig_objc_retain(obj) : obj; }
 static void my_objc_release(id obj) { if (orig_objc_release) orig_objc_release(obj); }
 static id my_objc_autorelease(id obj) { return orig_objc_autorelease ? orig_objc_autorelease(obj) : obj; }
@@ -358,15 +343,11 @@ static const char *my_sel_getName(SEL sel) { return orig_sel_getName ? orig_sel_
 static IMP my_method_getImplementation(Method method) { return orig_method_getImplementation ? orig_method_getImplementation(method) : NULL; }
 static void my_method_setImplementation(Method method, IMP imp) { if (orig_method_setImplementation) orig_method_setImplementation(method, imp); }
 static void my_method_exchangeImplementations(Method m1, Method m2) { if (orig_method_exchangeImplementations) orig_method_exchangeImplementations(m1, m2); }
-static BOOL my_class_addMethod(Class cls, SEL name, IMP imp, const char *types) {
-    return orig_class_addMethod ? orig_class_addMethod(cls, name, imp, types) : NO;
-}
-static IMP my_class_replaceMethod(Class cls, SEL name, IMP imp, const char *types) {
-    return orig_class_replaceMethod ? orig_class_replaceMethod(cls, name, imp, types) : NULL;
-}
+static BOOL my_class_addMethod(Class cls, SEL name, IMP imp, const char *types) { return orig_class_addMethod ? orig_class_addMethod(cls, name, imp, types) : NO; }
+static IMP my_class_replaceMethod(Class cls, SEL name, IMP imp, const char *types) { return orig_class_replaceMethod ? orig_class_replaceMethod(cls, name, imp, types) : NULL; }
 
 // ============================================================================
-// Objective-C swizzling (for UIDevice and LAContext)
+// Objective-C swizzling
 // ============================================================================
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
@@ -409,7 +390,7 @@ void swizzle_objc_methods() {
 }
 
 // ============================================================================
-// Fingerprint functions (added as requested)
+// Fingerprint functions
 // ============================================================================
 static NSString* sessionFingerprint() {
     NSString *uuid = [[NSUUID UUID] UUIDString];
@@ -451,28 +432,22 @@ static NSString* loadFingerprint() {
 }
 
 // ============================================================================
-// GUI for iOS 18 – shows fingerprint and allows saving
+// GUI for iOS 18
 // ============================================================================
 static void showFingerprintGUI(NSString *currentFP) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        // Create an alert controller with text field to display fingerprint
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"بصمة الجلسة"
                                                                        message:@"تم إنشاء بصمة فريدة لهذه الجلسة"
                                                                 preferredStyle:UIAlertControllerStyleAlert];
-        
-        // Add text field to show fingerprint
         [alert addTextFieldWithConfigurationHandler:^(UITextField *textField) {
             textField.text = currentFP;
             textField.placeholder = @"البصمة";
-            textField.enabled = NO; // read-only but can be copied
+            textField.enabled = NO;
             textField.font = [UIFont fontWithName:@"CourierNewPSMT" size:12];
             textField.textAlignment = NSTextAlignmentCenter;
         }];
-        
-        // Button to save fingerprint
         UIAlertAction *saveAction = [UIAlertAction actionWithTitle:@"حفظ البصمة" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             saveFingerprint(currentFP);
-            // Show confirmation
             UIAlertController *confirm = [UIAlertController alertControllerWithTitle:@"تم الحفظ"
                                                                              message:@"تم حفظ البصمة في Keychain"
                                                                       preferredStyle:UIAlertControllerStyleAlert];
@@ -490,8 +465,6 @@ static void showFingerprintGUI(NSString *currentFP) {
             }
             [keyWindow.rootViewController presentViewController:confirm animated:YES completion:nil];
         }];
-        
-        // Button to load existing fingerprint
         UIAlertAction *loadAction = [UIAlertAction actionWithTitle:@"تحميل بصمة محفوظة" style:UIAlertActionStyleDefault handler:^(UIAlertAction *action) {
             NSString *saved = loadFingerprint();
             if (saved) {
@@ -530,14 +503,10 @@ static void showFingerprintGUI(NSString *currentFP) {
                 [keyWindow.rootViewController presentViewController:noSaved animated:YES completion:nil];
             }
         }];
-        
         UIAlertAction *cancelAction = [UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil];
-        
         [alert addAction:saveAction];
         [alert addAction:loadAction];
         [alert addAction:cancelAction];
-        
-        // Get the topmost view controller
         UIWindow *keyWindow = nil;
         if (@available(iOS 13.0, *)) {
             for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
@@ -563,7 +532,6 @@ static void showFingerprintGUI(NSString *currentFP) {
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
-        // original hooks
         {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
         {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
         {"dlopen", (void *)my_dlopen, (void **)&orig_dlopen},
@@ -591,7 +559,6 @@ void fishhook_bindings() {
         {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
         {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
-        // additional Security framework hooks
         {"SecTrustEvaluate", (void *)my_SecTrustEvaluate, (void **)&orig_SecTrustEvaluate},
         {"SecKeyRawVerify", (void *)my_SecKeyRawVerify, (void **)&orig_SecKeyRawVerify},
         {"SecKeyRawSign", (void *)my_SecKeyRawSign, (void **)&orig_SecKeyRawSign},
@@ -609,7 +576,6 @@ void fishhook_bindings() {
         {"SecKeyCopyExternalRepresentation", (void *)my_SecKeyCopyExternalRepresentation, (void **)&orig_SecKeyCopyExternalRepresentation},
         {"SecKeyCopyAttributes", (void *)my_SecKeyCopyAttributes, (void **)&orig_SecKeyCopyAttributes},
         {"SecKeyGetBlockSize", (void *)my_SecKeyGetBlockSize, (void **)&orig_SecKeyGetBlockSize},
-        // SSL / CFNetwork hooks
         {"SSLHandshake", (void *)my_SSLHandshake, (void **)&orig_SSLHandshake},
         {"SSLRead", (void *)my_SSLRead, (void **)&orig_SSLRead},
         {"SSLWrite", (void *)my_SSLWrite, (void **)&orig_SSLWrite},
@@ -624,7 +590,6 @@ void fishhook_bindings() {
         {"CFHostGetAddressing", (void *)my_CFHostGetAddressing, (void **)&orig_CFHostGetAddressing},
         {"CFNetworkCopySystemProxySettings", (void *)my_CFNetworkCopySystemProxySettings, (void **)&orig_CFNetworkCopySystemProxySettings},
         {"CFNetworkCopyProxiesForURL", (void *)my_CFNetworkCopyProxiesForURL, (void **)&orig_CFNetworkCopyProxiesForURL},
-        // Objective-C runtime hooks (passthrough – safe)
         {"objc_msgSend", (void *)my_objc_msgSend, (void **)&orig_objc_msgSend},
         {"objc_retain", (void *)my_objc_retain, (void **)&orig_objc_retain},
         {"objc_release", (void *)my_objc_release, (void **)&orig_objc_release},
@@ -668,7 +633,7 @@ static int my_printf(const char *format, ...) {
 }
 
 // ============================================================================
-// Environment checks (original security detection functions)
+// Environment checks (security detection)
 // ============================================================================
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
@@ -841,7 +806,6 @@ void perform_security_checks() {
 // Delayed initialization with 20 seconds, banner, and fingerprint GUI
 // ============================================================================
 static void delayed_init(void) {
-    // Show banner on screen and log
     dispatch_async(dispatch_get_main_queue(), ^{
         NSLog(@"✅ تم تشغيل الحمايه");
         UIWindow *keyWindow = nil;
@@ -867,12 +831,10 @@ static void delayed_init(void) {
         }
     });
     
-    // Activate all protection hooks
     perform_security_checks();
     fishhook_bindings();
     swizzle_objc_methods();
     
-    // Generate and show fingerprint GUI after a short delay (so that UI is ready)
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         NSString *fp = sessionFingerprint();
         showFingerprintGUI(fp);
@@ -886,7 +848,6 @@ __attribute__((constructor))
 void init_hook(void) {
     srand((unsigned int)time(NULL));
     load_real_ptrace();
-    // Delay the actual hooking and security checks by 20 seconds
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
         delayed_init();
     });
