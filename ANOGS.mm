@@ -1,4 +1,4 @@
-#import <stdio.h>
+د#import <stdio.h>
 #import <string.h>
 #import <unistd.h>
 #import <stdlib.h>
@@ -325,8 +325,12 @@ static int my_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void
     return orig_pthread_create ? orig_pthread_create(thread, attr, start_routine, arg) : EAGAIN;
 }
 
+// التصحيح الأساسي: استخدام ::pthread_self() بدلاً من pthread_self() لتجنب الاستدعاء الذاتي
 static pthread_t (*orig_pthread_self)(void);
-static pthread_t my_pthread_self(void) { return orig_pthread_self ? orig_pthread_self() : pthread_self(); }
+static pthread_t my_pthread_self(void) {
+    if (orig_pthread_self) return orig_pthread_self();
+    return ::pthread_self();
+}
 
 static int (*orig_pthread_setname_np)(const char *);
 static int my_pthread_setname_np(const char *name) { return 0; }
