@@ -264,12 +264,30 @@ void fishhook_bindings() {
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
+
 // ============================================================================
-// Constructor
+// Constructor المحسن
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
     load_real_ptrace();
     fishhook_bindings();
+    swizzle_objc_methods();
+
+    // تأخير إظهار الواجهة 4 ثوانٍ حتى يكتمل تحميل التطبيق الأساسي
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        Class bridgeClass = NSClassFromString(@"DynamicUIBridge");
+        if (bridgeClass) {
+            #pragma clang diagnostic push
+            #pragma clang diagnostic ignored "-Wundeclared-selector"
+            [bridgeClass performSelector:@selector(showDashboard)];
+            #pragma clang diagnostic pop
+            NSLog(@"[ANOGS] تم استدعاء الواجهة الرسومية بنجاح!");
+        } else {
+            NSLog(@"[ANOGS] خطأ: لم يتم العثور على كلاس السويفت DynamicUIBridge.");
+        }
+    });
+}
+
     swizzle_objc_methods();
 }
