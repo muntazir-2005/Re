@@ -1,4 +1,4 @@
-// ANOGS.mm (بدون mach_vm.h)
+// ANOGS.mm
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -7,7 +7,7 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <dlfcn.h>
-#import <mach/mach.h>        // mach_vm_* متوفرة هنا في الـ SDK الحديثة
+#import <mach/mach.h>
 #import <mach-o/dyld.h>
 #import <TargetConditionals.h>
 #import <sys/param.h>
@@ -38,7 +38,7 @@ typedef CFStringRef SecKeyAlgorithm;
 static bool is_protection_enabled = false;
 
 // ============================================================================
-// ptrace
+// ptrace dynamic lookup
 // ============================================================================
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
@@ -48,7 +48,7 @@ static void load_real_ptrace(void) {
 }
 
 // ============================================================================
-// Original function pointers (اقتصر على الضروري لتجنب الأخطاء)
+// Original function pointers
 // ============================================================================
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
@@ -105,7 +105,18 @@ static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *
     }
     return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : 0;
 }
-static void* my_dlopen(const char *path, int mode) { return orig_dlopen ? orig_dlopen(path, mode) : NULL; }
+static void* my_dlopen(const char *path, int mode) {
+    // منع تحميل مكتبات الحقن (Anti-Dylib Injection)
+    if (is_protection_enabled && path) {
+        const char* blocked[] = {"frida", "substrate", "cydia", "hook", "inject", "dylib"};
+        for (int i = 0; i < sizeof(blocked)/sizeof(blocked[0]); i++) {
+            if (strstr(path, blocked[i])) {
+                return NULL;
+            }
+        }
+    }
+    return orig_dlopen ? orig_dlopen(path, mode) : NULL;
+}
 static void* my_dlsym(void *handle, const char *symbol) {
     if (is_protection_enabled && symbol && (strstr(symbol, "ptrace") || strstr(symbol, "sysctl") || strstr(symbol, "task_for_pid") || strstr(symbol, "vm_read")))
         return NULL;
@@ -211,7 +222,7 @@ static int is_frida_loaded() { return dlopen("frida-agent.dylib", RTLD_NOLOAD) !
 
 void perform_security_checks() {
     if (!is_protection_enabled) return;
-    // no exit, just ignore
+    // لا نخرج التطبيق، فقط نتجاهل
 }
 
 // ============================================================================
@@ -224,7 +235,7 @@ extern "C" void set_protection_state(bool enabled) {
 }
 
 // ============================================================================
-// fishhook bindings (بدون الدوال التي تسببت في الأخطاء)
+// fishhook bindings
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
@@ -264,30 +275,12 @@ void fishhook_bindings() {
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
-
 // ============================================================================
-// Constructor المحسن
+// Constructor
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
     load_real_ptrace();
     fishhook_bindings();
-    swizzle_objc_methods();
-
-    // تأخير إظهار الواجهة 4 ثوانٍ حتى يكتمل تحميل التطبيق الأساسي
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(4.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        Class bridgeClass = NSClassFromString(@"DynamicUIBridge");
-        if (bridgeClass) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Wundeclared-selector"
-            [bridgeClass performSelector:@selector(showDashboard)];
-            #pragma clang diagnostic pop
-            NSLog(@"[ANOGS] تم استدعاء الواجهة الرسومية بنجاح!");
-        } else {
-            NSLog(@"[ANOGS] خطأ: لم يتم العثور على كلاس السويفت DynamicUIBridge.");
-        }
-    });
-}
-
     swizzle_objc_methods();
 }
