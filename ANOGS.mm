@@ -1,4 +1,4 @@
-// ANOGS.mm (modified - no exit)
+// ANOGS.mm (بدون mach_vm.h)
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -7,8 +7,7 @@
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
 #import <dlfcn.h>
-#import <mach/mach.h>
-#import <mach/mach_vm.h>
+#import <mach/mach.h>        // mach_vm_* متوفرة هنا في الـ SDK الحديثة
 #import <mach-o/dyld.h>
 #import <TargetConditionals.h>
 #import <sys/param.h>
@@ -28,13 +27,18 @@
 
 #include "fishhook.h"
 
+// تعريف الأنواع الناقصة
+#ifndef __SecKeyAlgorithm__
+typedef CFStringRef SecKeyAlgorithm;
+#endif
+
 // ============================================================================
 // Global protection flag (default: OFF)
 // ============================================================================
 static bool is_protection_enabled = false;
 
 // ============================================================================
-// ptrace dynamic lookup
+// ptrace
 // ============================================================================
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
@@ -43,46 +47,25 @@ static void load_real_ptrace(void) {
     if (!real_ptrace) real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
 }
 
-// Forward declarations for OpenSSL
-typedef struct rsa_st RSA;
-typedef struct evp_pkey_st EVP_PKEY;
-typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
-typedef struct x509_st X509;
-typedef struct X509_store_ctx_st X509_STORE_CTX;
-typedef struct ssl_ctx_st SSL_CTX;
-typedef struct bio_st BIO;
-typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
-
 // ============================================================================
-// Original function pointers (same as before)
+// Original function pointers (اقتصر على الضروري لتجنب الأخطاء)
 // ============================================================================
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static void* (*orig_dlopen)(const char *path, int mode);
 static void* (*orig_dlsym)(void *handle, const char *symbol);
-static int (*orig_task_for_pid)(mach_port_t target_tport, int pid, mach_port_t *tn);
-static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize);
-static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
-static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
-static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
-static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
-static OSStatus (*orig_SecItemAdd)(CFDictionaryRef attributes, CFTypeRef *result);
-static OSStatus (*orig_SecItemUpdate)(CFDictionaryRef query, CFDictionaryRef attributesToUpdate);
-static OSStatus (*orig_SecItemDelete)(CFDictionaryRef query);
-static SecKeyRef (*orig_SecKeyCreateRandomKey)(CFDictionaryRef parameters, CFErrorRef *error);
-static SecKeyRef (*orig_SecKeyCopyPublicKey)(SecKeyRef key);
-static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error);
-static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error);
-static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
-static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
-static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
-static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
-static int (*orig_X509_verify_cert)(X509_STORE_CTX *ctx);
-static int (*orig_X509_check_private_key)(X509 *x509, EVP_PKEY *pkey);
-static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u);
-static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, int type);
-static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
-static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
+static int (*orig_task_for_pid)(mach_port_t t, int pid, mach_port_t *tn);
+static int (*orig_vm_read_overwrite)(vm_map_t, vm_address_t, vm_size_t, vm_address_t, vm_size_t*);
+static int (*orig_vm_write)(vm_map_t, vm_address_t, vm_offset_t, mach_msg_type_number_t);
+static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef, CFTypeRef*);
+static OSStatus (*orig_SecItemAdd)(CFDictionaryRef, CFTypeRef*);
+static OSStatus (*orig_SecItemUpdate)(CFDictionaryRef, CFDictionaryRef);
+static OSStatus (*orig_SecItemDelete)(CFDictionaryRef);
+static SecKeyRef (*orig_SecKeyCreateRandomKey)(CFDictionaryRef, CFErrorRef*);
+static SecKeyRef (*orig_SecKeyCopyPublicKey)(SecKeyRef);
+static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef, SecKeyAlgorithm, CFDataRef, CFErrorRef*);
+static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef, SecKeyAlgorithm, CFDataRef, CFDataRef, CFErrorRef*);
+static CCCryptorStatus (*orig_CCCrypt)(CCOperation, CCAlgorithm, CCOptions, const void*, size_t, const void*, const void*, size_t, void*, size_t, size_t*);
 static char* (*orig_getenv)(const char*);
 static int (*orig_stat)(const char*, struct stat*);
 static int (*orig_lstat)(const char*, struct stat*);
@@ -93,9 +76,6 @@ static intptr_t (*orig__dyld_get_image_vmaddr_slide)(uint32_t);
 static const char* (*orig__dyld_get_image_name)(uint32_t);
 static const struct mach_header* (*orig__dyld_get_image_header)(uint32_t);
 static kern_return_t (*orig_vm_read)(vm_map_t, vm_address_t, vm_size_t, vm_offset_t*, vm_size_t*);
-static kern_return_t (*orig_vm_region_64)(vm_map_t, vm_address_t*, vm_size_t*, vm_region_flavor_t*, vm_region_info_t, mach_msg_type_number_t*, mach_port_t*);
-static kern_return_t (*orig_vm_region_recurse_64)(vm_map_t, vm_address_t*, vm_size_t*, uint32_t*, vm_region_info_t, mach_msg_type_number_t*);
-static kern_return_t (*orig_mach_vm_region_recurse)(vm_map_t, mach_vm_address_t*, mach_vm_size_t*, uint32_t*, vm_region_info_t, mach_msg_type_number_t*);
 static void (*orig_SSLGetEnabledCiphers)(SSLContextRef, uint16_t*, size_t*);
 static size_t (*orig_SSLGetNegotiatedCipher)(SSLContextRef);
 static void (*orig_SSLGetNumberEnabledCiphers)(SSLContextRef, size_t*);
@@ -104,7 +84,7 @@ static void (*orig_SSLGetSupportedCiphers)(SSLContextRef, uint16_t*, size_t*);
 static CFAbsoluteTime (*orig_SecTrustGetVerifyTime)(SecTrustRef);
 
 // ============================================================================
-// Replacement functions (unchanged, respect flag)
+// Replacement functions (all respect is_protection_enabled)
 // ============================================================================
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (!is_protection_enabled) { load_real_ptrace(); return real_ptrace ? real_ptrace(request, pid, addr, data) : 0; }
@@ -134,8 +114,6 @@ static void* my_dlsym(void *handle, const char *symbol) {
 static int my_task_for_pid(mach_port_t t, int pid, mach_port_t *tn) { return is_protection_enabled ? KERN_FAILURE : (orig_task_for_pid ? orig_task_for_pid(t, pid, tn) : KERN_FAILURE); }
 static int my_vm_read_overwrite(vm_map_t t, vm_address_t a, vm_size_t s, vm_address_t d, vm_size_t *o) { return is_protection_enabled ? KERN_FAILURE : (orig_vm_read_overwrite ? orig_vm_read_overwrite(t, a, s, d, o) : KERN_FAILURE); }
 static int my_vm_write(vm_map_t t, vm_address_t a, vm_offset_t d, mach_msg_type_number_t c) { return is_protection_enabled ? KERN_FAILURE : (orig_vm_write ? orig_vm_write(t, a, d, c) : KERN_FAILURE); }
-static int my_vm_protect(vm_map_t t, vm_address_t a, vm_size_t s, boolean_t m, vm_prot_t p) { return orig_vm_protect ? orig_vm_protect(t, a, s, m, p) : KERN_SUCCESS; }
-static int my_mach_vm_protect(vm_map_t t, mach_vm_address_t a, mach_vm_size_t s, boolean_t m, vm_prot_t p) { return orig_mach_vm_protect ? orig_mach_vm_protect(t, a, s, m, p) : KERN_SUCCESS; }
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef q, CFTypeRef *r) { return (is_protection_enabled || !orig_SecItemCopyMatching) ? errSecItemNotFound : orig_SecItemCopyMatching(q, r); }
 static OSStatus my_SecItemAdd(CFDictionaryRef a, CFTypeRef *r) { return (is_protection_enabled || !orig_SecItemAdd) ? errSecDuplicateItem : orig_SecItemAdd(a, r); }
 static OSStatus my_SecItemUpdate(CFDictionaryRef q, CFDictionaryRef u) { return (is_protection_enabled || !orig_SecItemUpdate) ? errSecItemNotFound : orig_SecItemUpdate(q, u); }
@@ -158,15 +136,6 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     *moved = bytes;
     return (bytes == inLen) ? kCCSuccess : kCCBufferTooSmall;
 }
-static int my_RSA_verify(int t, const unsigned char *m, unsigned int ml, const unsigned char *s, unsigned int sl, RSA *r) { return (!is_protection_enabled && orig_RSA_verify) ? orig_RSA_verify(t, m, ml, s, sl, r) : 1; }
-static int my_RSA_sign(int t, const unsigned char *m, unsigned int ml, unsigned char *s, unsigned int *sl, RSA *r) { if (!is_protection_enabled && orig_RSA_sign) return orig_RSA_sign(t, m, ml, s, sl, r); if (sl) *sl = 0; return 0; }
-static int my_EVP_PKEY_verify(EVP_PKEY_CTX *c, const unsigned char *s, size_t sl, const unsigned char *t, size_t tl) { return (!is_protection_enabled && orig_EVP_PKEY_verify) ? orig_EVP_PKEY_verify(c, s, sl, t, tl) : 1; }
-static int my_X509_verify_cert(X509_STORE_CTX *c) { return (!is_protection_enabled && orig_X509_verify_cert) ? orig_X509_verify_cert(c) : 1; }
-static int my_X509_check_private_key(X509 *x, EVP_PKEY *p) { return (!is_protection_enabled && orig_X509_check_private_key) ? orig_X509_check_private_key(x, p) : 1; }
-static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *b, EVP_PKEY **x, pem_password_cb *c, void *u) { return (!is_protection_enabled && orig_PEM_read_bio_PrivateKey) ? orig_PEM_read_bio_PrivateKey(b, x, c, u) : NULL; }
-static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *c, const char *f, int t) { return (!is_protection_enabled && orig_SSL_CTX_use_PrivateKey_file) ? orig_SSL_CTX_use_PrivateKey_file(c, f, t) : 1; }
-static int my_SSL_CTX_check_private_key(SSL_CTX *c) { return (!is_protection_enabled && orig_SSL_CTX_check_private_key) ? orig_SSL_CTX_check_private_key(c) : 1; }
-static int my_SSL_CTX_load_verify_locations(SSL_CTX *c, const char *ca, const char *cp) { return (!is_protection_enabled && orig_SSL_CTX_load_verify_locations) ? orig_SSL_CTX_load_verify_locations(c, ca, cp) : 1; }
 static char* my_getenv(const char *name) {
     if (is_protection_enabled && name && (strstr(name, "DYLD_") || strstr(name, "CFNETWORK_") || strstr(name, "OBJC_DISABLE"))) return NULL;
     return orig_getenv ? orig_getenv(name) : NULL;
@@ -189,9 +158,6 @@ static intptr_t my__dyld_get_image_vmaddr_slide(uint32_t i) { return (!is_protec
 static const char* my__dyld_get_image_name(uint32_t i) { return (!is_protection_enabled && orig__dyld_get_image_name) ? orig__dyld_get_image_name(i) : NULL; }
 static const struct mach_header* my__dyld_get_image_header(uint32_t i) { return (!is_protection_enabled && orig__dyld_get_image_header) ? orig__dyld_get_image_header(i) : NULL; }
 static kern_return_t my_vm_read(vm_map_t t, vm_address_t a, vm_size_t s, vm_offset_t *d, vm_size_t *o) { return (!is_protection_enabled && orig_vm_read) ? orig_vm_read(t, a, s, d, o) : KERN_FAILURE; }
-static kern_return_t my_vm_region_64(vm_map_t t, vm_address_t *a, vm_size_t *s, vm_region_flavor_t *f, vm_region_info_t i, mach_msg_type_number_t *c, mach_port_t *o) { return (!is_protection_enabled && orig_vm_region_64) ? orig_vm_region_64(t, a, s, f, i, c, o) : KERN_INVALID_ADDRESS; }
-static kern_return_t my_vm_region_recurse_64(vm_map_t t, vm_address_t *a, vm_size_t *s, uint32_t *d, vm_region_info_t i, mach_msg_type_number_t *c) { return (!is_protection_enabled && orig_vm_region_recurse_64) ? orig_vm_region_recurse_64(t, a, s, d, i, c) : KERN_INVALID_ADDRESS; }
-static kern_return_t my_mach_vm_region_recurse(vm_map_t t, mach_vm_address_t *a, mach_vm_size_t *s, uint32_t *d, vm_region_info_t i, mach_msg_type_number_t *c) { return (!is_protection_enabled && orig_mach_vm_region_recurse) ? orig_mach_vm_region_recurse(t, a, s, d, i, c) : KERN_INVALID_ADDRESS; }
 static void my_SSLGetEnabledCiphers(SSLContextRef c, uint16_t *cip, size_t *num) { if (!is_protection_enabled && orig_SSLGetEnabledCiphers) orig_SSLGetEnabledCiphers(c, cip, num); else if (num) *num = 0; }
 static size_t my_SSLGetNegotiatedCipher(SSLContextRef c) { return (!is_protection_enabled && orig_SSLGetNegotiatedCipher) ? orig_SSLGetNegotiatedCipher(c) : 0; }
 static void my_SSLGetNumberEnabledCiphers(SSLContextRef c, size_t *num) { if (!is_protection_enabled && orig_SSLGetNumberEnabledCiphers) orig_SSLGetNumberEnabledCiphers(c, num); else if (num) *num = 0; }
@@ -200,7 +166,7 @@ static void my_SSLGetSupportedCiphers(SSLContextRef c, uint16_t *cip, size_t *nu
 static CFAbsoluteTime my_SecTrustGetVerifyTime(SecTrustRef t) { return (!is_protection_enabled && orig_SecTrustGetVerifyTime) ? orig_SecTrustGetVerifyTime(t) : CFAbsoluteTimeGetCurrent(); }
 
 // ============================================================================
-// Objective-C swizzling (respects flag)
+// Objective-C swizzling
 // ============================================================================
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
@@ -227,7 +193,7 @@ void swizzle_objc_methods() {
 }
 
 // ============================================================================
-// Security checks – no exit, only log if needed (or ignore)
+// Security checks (لا تخرج التطبيق)
 // ============================================================================
 static int is_jailbroken_paths() {
     const char *paths[] = {"/Applications/Cydia.app", "/bin/bash", "/usr/sbin/sshd", "/etc/apt", "/var/checkra1n.dmg", NULL};
@@ -245,17 +211,11 @@ static int is_frida_loaded() { return dlopen("frida-agent.dylib", RTLD_NOLOAD) !
 
 void perform_security_checks() {
     if (!is_protection_enabled) return;
-    // No exit anywhere – just ignore threats
-    // Optionally log using NSLog (optional)
-    /*
-    if (is_jailbroken_paths()) NSLog(@"[ANOGS] Jailbreak detected but ignored");
-    if (is_debugger_attached()) NSLog(@"[ANOGS] Debugger attached but ignored");
-    if (is_frida_loaded()) NSLog(@"[ANOGS] Frida loaded but ignored");
-    */
+    // no exit, just ignore
 }
 
 // ============================================================================
-// Exported C function for Swift
+// Exported function for Swift
 // ============================================================================
 extern "C" void set_protection_state(bool enabled) {
     bool was = is_protection_enabled;
@@ -264,7 +224,7 @@ extern "C" void set_protection_state(bool enabled) {
 }
 
 // ============================================================================
-// fishhook bindings (same as before)
+// fishhook bindings (بدون الدوال التي تسببت في الأخطاء)
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
@@ -275,8 +235,6 @@ void fishhook_bindings() {
         {"task_for_pid", (void*)my_task_for_pid, (void**)&orig_task_for_pid},
         {"vm_read_overwrite", (void*)my_vm_read_overwrite, (void**)&orig_vm_read_overwrite},
         {"vm_write", (void*)my_vm_write, (void**)&orig_vm_write},
-        {"vm_protect", (void*)my_vm_protect, (void**)&orig_vm_protect},
-        {"mach_vm_protect", (void*)my_mach_vm_protect, (void**)&orig_mach_vm_protect},
         {"SecItemCopyMatching", (void*)my_SecItemCopyMatching, (void**)&orig_SecItemCopyMatching},
         {"SecItemAdd", (void*)my_SecItemAdd, (void**)&orig_SecItemAdd},
         {"SecItemUpdate", (void*)my_SecItemUpdate, (void**)&orig_SecItemUpdate},
@@ -286,15 +244,6 @@ void fishhook_bindings() {
         {"SecKeyCreateSignature", (void*)my_SecKeyCreateSignature, (void**)&orig_SecKeyCreateSignature},
         {"SecKeyVerifySignature", (void*)my_SecKeyVerifySignature, (void**)&orig_SecKeyVerifySignature},
         {"CCCrypt", (void*)my_CCCrypt, (void**)&orig_CCCrypt},
-        {"RSA_verify", (void*)my_RSA_verify, (void**)&orig_RSA_verify},
-        {"RSA_sign", (void*)my_RSA_sign, (void**)&orig_RSA_sign},
-        {"EVP_PKEY_verify", (void*)my_EVP_PKEY_verify, (void**)&orig_EVP_PKEY_verify},
-        {"X509_verify_cert", (void*)my_X509_verify_cert, (void**)&orig_X509_verify_cert},
-        {"X509_check_private_key", (void*)my_X509_check_private_key, (void**)&orig_X509_check_private_key},
-        {"PEM_read_bio_PrivateKey", (void*)my_PEM_read_bio_PrivateKey, (void**)&orig_PEM_read_bio_PrivateKey},
-        {"SSL_CTX_use_PrivateKey_file", (void*)my_SSL_CTX_use_PrivateKey_file, (void**)&orig_SSL_CTX_use_PrivateKey_file},
-        {"SSL_CTX_check_private_key", (void*)my_SSL_CTX_check_private_key, (void**)&orig_SSL_CTX_check_private_key},
-        {"SSL_CTX_load_verify_locations", (void*)my_SSL_CTX_load_verify_locations, (void**)&orig_SSL_CTX_load_verify_locations},
         {"getenv", (void*)my_getenv, (void**)&orig_getenv},
         {"stat", (void*)my_stat, (void**)&orig_stat},
         {"lstat", (void*)my_lstat, (void**)&orig_lstat},
@@ -305,9 +254,6 @@ void fishhook_bindings() {
         {"_dyld_get_image_name", (void*)my__dyld_get_image_name, (void**)&orig__dyld_get_image_name},
         {"_dyld_get_image_header", (void*)my__dyld_get_image_header, (void**)&orig__dyld_get_image_header},
         {"vm_read", (void*)my_vm_read, (void**)&orig_vm_read},
-        {"vm_region_64", (void*)my_vm_region_64, (void**)&orig_vm_region_64},
-        {"vm_region_recurse_64", (void*)my_vm_region_recurse_64, (void**)&orig_vm_region_recurse_64},
-        {"mach_vm_region_recurse", (void*)my_mach_vm_region_recurse, (void**)&orig_mach_vm_region_recurse},
         {"SSLGetEnabledCiphers", (void*)my_SSLGetEnabledCiphers, (void**)&orig_SSLGetEnabledCiphers},
         {"SSLGetNegotiatedCipher", (void*)my_SSLGetNegotiatedCipher, (void**)&orig_SSLGetNegotiatedCipher},
         {"SSLGetNumberEnabledCiphers", (void*)my_SSLGetNumberEnabledCiphers, (void**)&orig_SSLGetNumberEnabledCiphers},
@@ -319,12 +265,11 @@ void fishhook_bindings() {
 }
 
 // ============================================================================
-// Constructor – runs when dylib is loaded
+// Constructor
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
     load_real_ptrace();
     fishhook_bindings();
     swizzle_objc_methods();
-    // protection is OFF by default
 }
