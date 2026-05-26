@@ -3,12 +3,14 @@ SWIFTC = xcrun -sdk iphoneos swiftc
 ARCHS = arm64
 SDK = $(shell xcrun -sdk iphoneos --show-sdk-path)
 
-# إعدادات C/C++
+# إعدادات بيئة C/C++
 CFLAGS = -arch $(ARCHS) -isysroot $(SDK) -miphoneos-version-min=15.0 -fobjc-arc -O2
-# إعدادات Swift
-SWIFTFLAGS = -target arm64-apple-ios15.0 -sdk $(SDK) -emit-objc-header -emit-objc-header-path ANOGS-Swift.h -parse-as-library
-# إعدادات الربط (يجب إضافة مكتبات السويفت الأساسية)
-LDFLAGS = -dynamiclib -install_name @executable_path/ANOGS.dylib -lc++ -L/usr/lib/swift
+
+# إعدادات بيئة Swift
+SWIFT_TARGET = arm64-apple-ios15.0
+SWIFTFLAGS = -target $(SWIFT_TARGET) -sdk $(SDK) -emit-objc-header -emit-objc-header-path ANOGS-Swift.h -parse-as-library
+
+# إطارات العمل المطلوبة
 FRAMEWORKS = -framework Foundation -framework UIKit -framework LocalAuthentication -framework Security -framework SwiftUI
 
 SRC_OBJC = ANOGS.mm fishhook.c
@@ -18,21 +20,21 @@ OBJ = fishhook.o ANOGS.o Interface.o
 
 all: ANOGS.dylib
 
-# ترجمة ملفات السويفت واستخراج ملف الرأس (Header)
+# 1. ترجمة ملف السويفت وتوليد الهيدر
 Interface.o: $(SRC_SWIFT)
 	$(SWIFTC) $(SWIFTFLAGS) -c $< -o $@
 
-# ترجمة Objective-C++
+# 2. ترجمة ملف C++
 ANOGS.o: ANOGS.mm Interface.o
 	$(CC) $(CFLAGS) -x objective-c++ -c $< -o $@
 
-# ترجمة C
+# 3. ترجمة ملف C
 fishhook.o: fishhook.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# دمج الجميع في ملف dylib
+# 4. الدمج النهائي باستخدام swiftc بدلاً من clang لحل مشكلة مكتبات التوافق
 ANOGS.dylib: $(OBJ)
-	$(CC) $(CFLAGS) $(LDFLAGS) -o $@ $^ $(FRAMEWORKS)
+	$(SWIFTC) -target $(SWIFT_TARGET) -sdk $(SDK) -emit-library -o $@ $^ -Xlinker -install_name -Xlinker @executable_path/ANOGS.dylib -lc++ $(FRAMEWORKS)
 
 clean:
 	rm -f $(OBJ) ANOGS.dylib ANOGS-Swift.h
