@@ -15,7 +15,7 @@
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
-#import <SystemConfiguration/SystemConfiguration.h>  // أضف هذا السطر
+#import <SystemConfiguration/SystemConfiguration.h>   // ✅ تمت الإضافة
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -25,8 +25,7 @@
 
 #include "fishhook.h"
 
-// ... باقي الكود ...
-// ptrace – not available in iOS SDK, use dynamic lookup
+// ptrace
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
@@ -36,7 +35,7 @@ static void load_real_ptrace(void) {
     }
 }
 
-// Forward declarations for OpenSSL types (no headers needed)
+// OpenSSL types
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -46,9 +45,7 @@ typedef struct ssl_ctx_st SSL_CTX;
 typedef struct bio_st BIO;
 typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
 
-// ============================================================================
-// Original function pointers (existing)
-// ============================================================================
+// ========== Original function pointers ==========
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static void* (*orig_dlopen)(const char *path, int mode);
@@ -85,7 +82,7 @@ static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, i
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Environment checks
+// Environment checks (original)
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -95,9 +92,7 @@ static bool (*orig_hasCydia)(void);
 static bool (*orig_isJailbroken)(void);
 static bool (*orig_amIBeingDebugged)(void);
 
-// ============================================================================
-// NEW: Security / Trust functions (added)
-// ============================================================================
+// ========== NEW: Security / Trust functions ==========
 static OSStatus (*orig_SecTrustEvaluate)(SecTrustRef trust, SecTrustResultType *result);
 static SecKeyRef (*orig_SecTrustCopyPublicKey)(SecTrustRef trust);
 static SecCertificateRef (*orig_SecTrustGetCertificateAtIndex)(SecTrustRef trust, CFIndex ix);
@@ -122,17 +117,8 @@ static CFArrayRef (*orig_CFNetworkCopyProxiesForURL)(CFURLRef url, CFDictionaryR
 static Boolean (*orig_SCNetworkReachabilityGetFlags)(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags *flags);
 static SCNetworkReachabilityRef (*orig_SCNetworkReachabilityCreateWithName)(CFAllocatorRef allocator, const char *name);
 static SCNetworkReachabilityRef (*orig_SCNetworkReachabilityCreateWithAddress)(CFAllocatorRef allocator, const struct sockaddr *address);
-static CFStringRef (*orig_kCFStreamSSLValidatesCertificateChain)(void);      // constants, not functions – ignore
-static CFStringRef (*orig_kCFStreamSSLAllowsAnyRoot)(void);
-static CFStringRef (*orig_kCFStreamSSLAllowsExpiredCertificates)(void);
-static CFStringRef (*orig_kCFStreamSSLAllowsExpiredRoots)(void);
-static CFStringRef (*orig_kCFStreamSSLCertificates)(void);
-static CFStringRef (*orig_kCFStreamSSLPeerName)(void);
-static CFTypeRef (*orig_CFStreamPropertySSLSettings)(void);                 // actually a constant, hook not needed
 
-// ============================================================================
-// Replacement functions (existing)
-// ============================================================================
+// ========== Replacement functions ==========
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
     load_real_ptrace();
@@ -149,11 +135,9 @@ static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void
 }
 
 static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
-    if (oldp && oldlenp) {
-        if (strstr(name, "debug") || strstr(name, "kern.proc")) {
-            memset(oldp, 0, *oldlenp);
-            return 0;
-        }
+    if (oldp && oldlenp && (strstr(name, "debug") || strstr(name, "kern.proc"))) {
+        memset(oldp, 0, *oldlenp);
+        return 0;
     }
     return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : 0;
 }
@@ -163,65 +147,34 @@ static void* my_dlopen(const char *path, int mode) {
 }
 
 static void* my_dlsym(void *handle, const char *symbol) {
-    if (symbol) {
-        if (strstr(symbol, "ptrace") || strstr(symbol, "sysctl") ||
-            strstr(symbol, "task_for_pid") || strstr(symbol, "vm_read")) {
-            return NULL;
-        }
-    }
+    if (symbol && (strstr(symbol, "ptrace") || strstr(symbol, "sysctl") || strstr(symbol, "task_for_pid") || strstr(symbol, "vm_read")))
+        return NULL;
     return orig_dlsym ? orig_dlsym(handle, symbol) : NULL;
 }
 
-static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn) {
-    return KERN_FAILURE;
-}
-
-static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize) {
-    return KERN_FAILURE;
-}
-
-static int my_vm_write(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt) {
-    return KERN_FAILURE;
-}
-
+static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn) { return KERN_FAILURE; }
+static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize) { return KERN_FAILURE; }
+static int my_vm_write(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt) { return KERN_FAILURE; }
 static int my_vm_protect(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection) {
     return orig_vm_protect ? orig_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
-
 static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection) {
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain
-static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) {
-    return errSecItemNotFound;
-}
-static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) {
-    return errSecDuplicateItem;
-}
-static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) {
-    return errSecItemNotFound;
-}
-static OSStatus my_SecItemDelete(CFDictionaryRef query) {
-    return errSecSuccess;
-}
+static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
+static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
+static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) { return errSecItemNotFound; }
+static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
 
-// SecKey
 static SecKeyRef my_SecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) { return NULL; }
 static SecKeyRef my_SecKeyCopyPublicKey(SecKeyRef key) { return NULL; }
 static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error) {
     return CFDataCreate(NULL, (const UInt8*)"fake_signature", 14);
 }
-static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error) {
-    return true;
-}
+static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error) { return true; }
 
-// CommonCrypto
-static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options,
-                                  const void *key, size_t keyLength, const void *iv,
-                                  const void *dataIn, size_t dataInLength,
-                                  void *dataOut, size_t dataOutAvailable,
-                                  size_t *dataOutMoved) {
+static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved) {
     if (!dataOut || !dataOutMoved) return kCCParamError;
     size_t bytes = (dataInLength < dataOutAvailable) ? dataInLength : dataOutAvailable;
     memcpy(dataOut, dataIn, bytes);
@@ -229,12 +182,8 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// OpenSSL
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
-static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
-    if (sig_len) *sig_len = 0;
-    return 0;
-}
+static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) { if (sig_len) *sig_len = 0; return 0; }
 static int my_EVP_PKEY_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) { return 1; }
 static int my_X509_verify_cert(X509_STORE_CTX *ctx) { return 1; }
 static int my_X509_check_private_key(X509 *x509, EVP_PKEY *pkey) { return 1; }
@@ -243,7 +192,6 @@ static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int ty
 static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
 static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
 
-// Environment check replacements
 static bool my_is_jb(void) { return false; }
 static bool my_ROOTED(void) { return false; }
 static bool my_DEBUGGER_ATTACHED(void) { return false; }
@@ -253,198 +201,50 @@ static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
-// ============================================================================
-// NEW: Replacement functions for Security / Trust
-// ============================================================================
-
-// SecTrustEvaluate – force success
+// ========== New Security replacements ==========
 static OSStatus my_SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result) {
     if (result) *result = kSecTrustResultProceed;
     return errSecSuccess;
 }
-
-// SecTrustCopyPublicKey – call original (safe)
-static SecKeyRef my_SecTrustCopyPublicKey(SecTrustRef trust) {
-    if (orig_SecTrustCopyPublicKey)
-        return orig_SecTrustCopyPublicKey(trust);
-    return NULL;
-}
-
-// SecTrustGetCertificateAtIndex – call original
-static SecCertificateRef my_SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex ix) {
-    if (orig_SecTrustGetCertificateAtIndex)
-        return orig_SecTrustGetCertificateAtIndex(trust, ix);
-    return NULL;
-}
-
-// SecTrustGetCertificateCount – call original
-static CFIndex my_SecTrustGetCertificateCount(SecTrustRef trust) {
-    if (orig_SecTrustGetCertificateCount)
-        return orig_SecTrustGetCertificateCount(trust);
-    return 0;
-}
-
-// SecTrustGetTrustResult – return proceed
-static OSStatus my_SecTrustGetTrustResult(SecTrustRef trust, SecTrustResultType *result) {
-    if (result) *result = kSecTrustResultProceed;
-    return errSecSuccess;
-}
-
-// SecTrustSetAnchorCertificates – call original
-static OSStatus my_SecTrustSetAnchorCertificates(SecTrustRef trust, CFArrayRef anchorCertificates) {
-    if (orig_SecTrustSetAnchorCertificates)
-        return orig_SecTrustSetAnchorCertificates(trust, anchorCertificates);
-    return errSecSuccess;
-}
-
-// SecTrustSetAnchorCertificatesOnly – call original
-static OSStatus my_SecTrustSetAnchorCertificatesOnly(SecTrustRef trust, Boolean anchorCertificatesOnly) {
-    if (orig_SecTrustSetAnchorCertificatesOnly)
-        return orig_SecTrustSetAnchorCertificatesOnly(trust, anchorCertificatesOnly);
-    return errSecSuccess;
-}
-
-// SecTrustSetPolicies – call original
-static OSStatus my_SecTrustSetPolicies(SecTrustRef trust, CFTypeRef policies) {
-    if (orig_SecTrustSetPolicies)
-        return orig_SecTrustSetPolicies(trust, policies);
-    return errSecSuccess;
-}
-
-// SecTrustSetVerifyDate – call original
-static OSStatus my_SecTrustSetVerifyDate(SecTrustRef trust, CFDateRef verifyDate) {
-    if (orig_SecTrustSetVerifyDate)
-        return orig_SecTrustSetVerifyDate(trust, verifyDate);
-    return errSecSuccess;
-}
-
-// SecCertificateCopyData – call original
-static CFDataRef my_SecCertificateCopyData(SecCertificateRef certificate) {
-    if (orig_SecCertificateCopyData)
-        return orig_SecCertificateCopyData(certificate);
-    return NULL;
-}
-
-// SecCertificateCopyKey – call original
-static SecKeyRef my_SecCertificateCopyKey(SecCertificateRef certificate) {
-    if (orig_SecCertificateCopyKey)
-        return orig_SecCertificateCopyKey(certificate);
-    return NULL;
-}
-
-// SecCertificateCreateWithData – call original
-static SecCertificateRef my_SecCertificateCreateWithData(CFAllocatorRef allocator, CFDataRef data) {
-    if (orig_SecCertificateCreateWithData)
-        return orig_SecCertificateCreateWithData(allocator, data);
-    return NULL;
-}
-
-// SecPolicyCreateSSL – call original
-static SecPolicyRef my_SecPolicyCreateSSL(Boolean server, CFStringRef hostname) {
-    if (orig_SecPolicyCreateSSL)
-        return orig_SecPolicyCreateSSL(server, hostname);
-    return NULL;
-}
-
-// SecPolicyCreateBasicX509 – call original
-static SecPolicyRef my_SecPolicyCreateBasicX509(void) {
-    if (orig_SecPolicyCreateBasicX509)
-        return orig_SecPolicyCreateBasicX509();
-    return NULL;
-}
-
-// SSLCreateContext – call original
-static SSLContextRef my_SSLCreateContext(CFAllocatorRef allocator, SSLProtocolSide protocolSide, SSLConnectionType connectionType) {
-    if (orig_SSLCreateContext)
-        return orig_SSLCreateContext(allocator, protocolSide, connectionType);
-    return NULL;
-}
-
-// SSLHandshake – call original
-static OSStatus my_SSLHandshake(SSLContextRef context) {
-    if (orig_SSLHandshake)
-        return orig_SSLHandshake(context);
-    return errSecSuccess;
-}
-
-// SSLSetSessionOption – call original
-static OSStatus my_SSLSetSessionOption(SSLContextRef context, SSLSessionOption option, Boolean value) {
-    if (orig_SSLSetSessionOption)
-        return orig_SSLSetSessionOption(context, option, value);
-    return errSecSuccess;
-}
-
-// SSLSetPeerDomainName – call original
-static OSStatus my_SSLSetPeerDomainName(SSLContextRef context, const char *peerName, size_t peerNameLen) {
-    if (orig_SSLSetPeerDomainName)
-        return orig_SSLSetPeerDomainName(context, peerName, peerNameLen);
-    return errSecSuccess;
-}
-
-// SSLSetCertificate – call original
-static OSStatus my_SSLSetCertificate(SSLContextRef context, CFArrayRef certs) {
-    if (orig_SSLSetCertificate)
-        return orig_SSLSetCertificate(context, certs);
-    return errSecSuccess;
-}
-
-// CFNetworkCopySystemProxySettings – call original
-static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) {
-    if (orig_CFNetworkCopySystemProxySettings)
-        return orig_CFNetworkCopySystemProxySettings();
-    return NULL;
-}
-
-// CFNetworkCopyProxiesForURL – call original
-static CFArrayRef my_CFNetworkCopyProxiesForURL(CFURLRef url, CFDictionaryRef proxySettings) {
-    if (orig_CFNetworkCopyProxiesForURL)
-        return orig_CFNetworkCopyProxiesForURL(url, proxySettings);
-    return NULL;
-}
-
-// SCNetworkReachabilityGetFlags – call original
+static SecKeyRef my_SecTrustCopyPublicKey(SecTrustRef trust) { return orig_SecTrustCopyPublicKey ? orig_SecTrustCopyPublicKey(trust) : NULL; }
+static SecCertificateRef my_SecTrustGetCertificateAtIndex(SecTrustRef trust, CFIndex ix) { return orig_SecTrustGetCertificateAtIndex ? orig_SecTrustGetCertificateAtIndex(trust, ix) : NULL; }
+static CFIndex my_SecTrustGetCertificateCount(SecTrustRef trust) { return orig_SecTrustGetCertificateCount ? orig_SecTrustGetCertificateCount(trust) : 0; }
+static OSStatus my_SecTrustGetTrustResult(SecTrustRef trust, SecTrustResultType *result) { if (result) *result = kSecTrustResultProceed; return errSecSuccess; }
+static OSStatus my_SecTrustSetAnchorCertificates(SecTrustRef trust, CFArrayRef anchorCertificates) { return orig_SecTrustSetAnchorCertificates ? orig_SecTrustSetAnchorCertificates(trust, anchorCertificates) : errSecSuccess; }
+static OSStatus my_SecTrustSetAnchorCertificatesOnly(SecTrustRef trust, Boolean anchorCertificatesOnly) { return orig_SecTrustSetAnchorCertificatesOnly ? orig_SecTrustSetAnchorCertificatesOnly(trust, anchorCertificatesOnly) : errSecSuccess; }
+static OSStatus my_SecTrustSetPolicies(SecTrustRef trust, CFTypeRef policies) { return orig_SecTrustSetPolicies ? orig_SecTrustSetPolicies(trust, policies) : errSecSuccess; }
+static OSStatus my_SecTrustSetVerifyDate(SecTrustRef trust, CFDateRef verifyDate) { return orig_SecTrustSetVerifyDate ? orig_SecTrustSetVerifyDate(trust, verifyDate) : errSecSuccess; }
+static CFDataRef my_SecCertificateCopyData(SecCertificateRef certificate) { return orig_SecCertificateCopyData ? orig_SecCertificateCopyData(certificate) : NULL; }
+static SecKeyRef my_SecCertificateCopyKey(SecCertificateRef certificate) { return orig_SecCertificateCopyKey ? orig_SecCertificateCopyKey(certificate) : NULL; }
+static SecCertificateRef my_SecCertificateCreateWithData(CFAllocatorRef allocator, CFDataRef data) { return orig_SecCertificateCreateWithData ? orig_SecCertificateCreateWithData(allocator, data) : NULL; }
+static SecPolicyRef my_SecPolicyCreateSSL(Boolean server, CFStringRef hostname) { return orig_SecPolicyCreateSSL ? orig_SecPolicyCreateSSL(server, hostname) : NULL; }
+static SecPolicyRef my_SecPolicyCreateBasicX509(void) { return orig_SecPolicyCreateBasicX509 ? orig_SecPolicyCreateBasicX509() : NULL; }
+static SSLContextRef my_SSLCreateContext(CFAllocatorRef allocator, SSLProtocolSide protocolSide, SSLConnectionType connectionType) { return orig_SSLCreateContext ? orig_SSLCreateContext(allocator, protocolSide, connectionType) : NULL; }
+static OSStatus my_SSLHandshake(SSLContextRef context) { return orig_SSLHandshake ? orig_SSLHandshake(context) : errSecSuccess; }
+static OSStatus my_SSLSetSessionOption(SSLContextRef context, SSLSessionOption option, Boolean value) { return orig_SSLSetSessionOption ? orig_SSLSetSessionOption(context, option, value) : errSecSuccess; }
+static OSStatus my_SSLSetPeerDomainName(SSLContextRef context, const char *peerName, size_t peerNameLen) { return orig_SSLSetPeerDomainName ? orig_SSLSetPeerDomainName(context, peerName, peerNameLen) : errSecSuccess; }
+static OSStatus my_SSLSetCertificate(SSLContextRef context, CFArrayRef certs) { return orig_SSLSetCertificate ? orig_SSLSetCertificate(context, certs) : errSecSuccess; }
+static CFDictionaryRef my_CFNetworkCopySystemProxySettings(void) { return orig_CFNetworkCopySystemProxySettings ? orig_CFNetworkCopySystemProxySettings() : NULL; }
+static CFArrayRef my_CFNetworkCopyProxiesForURL(CFURLRef url, CFDictionaryRef proxySettings) { return orig_CFNetworkCopyProxiesForURL ? orig_CFNetworkCopyProxiesForURL(url, proxySettings) : NULL; }
 static Boolean my_SCNetworkReachabilityGetFlags(SCNetworkReachabilityRef target, SCNetworkReachabilityFlags *flags) {
-    if (orig_SCNetworkReachabilityGetFlags)
-        return orig_SCNetworkReachabilityGetFlags(target, flags);
-    if (flags) *flags = 0;
-    return FALSE;
+    return orig_SCNetworkReachabilityGetFlags ? orig_SCNetworkReachabilityGetFlags(target, flags) : FALSE;
 }
-
-// SCNetworkReachabilityCreateWithName – call original
 static SCNetworkReachabilityRef my_SCNetworkReachabilityCreateWithName(CFAllocatorRef allocator, const char *name) {
-    if (orig_SCNetworkReachabilityCreateWithName)
-        return orig_SCNetworkReachabilityCreateWithName(allocator, name);
-    return NULL;
+    return orig_SCNetworkReachabilityCreateWithName ? orig_SCNetworkReachabilityCreateWithName(allocator, name) : NULL;
 }
-
-// SCNetworkReachabilityCreateWithAddress – call original
 static SCNetworkReachabilityRef my_SCNetworkReachabilityCreateWithAddress(CFAllocatorRef allocator, const struct sockaddr *address) {
-    if (orig_SCNetworkReachabilityCreateWithAddress)
-        return orig_SCNetworkReachabilityCreateWithAddress(allocator, address);
-    return NULL;
+    return orig_SCNetworkReachabilityCreateWithAddress ? orig_SCNetworkReachabilityCreateWithAddress(allocator, address) : NULL;
 }
 
-// The following are constants, not functions – we leave them unhooked.
-// kCFStreamSSLValidatesCertificateChain, kCFStreamSSLAllowsAnyRoot, etc. are CFString constants.
-// CFStreamPropertySSLSettings is a constant. Hooking them is neither possible nor necessary.
-
-// ============================================================================
-// Objective-C swizzling
-// ============================================================================
+// ========== Objective-C swizzling ==========
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
 }
-
-static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy,
-                                        NSString *localizedReason,
-                                        void(^reply)(BOOL success, NSError *error)) {
+static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSString *localizedReason, void(^reply)(BOOL success, NSError *error)) {
     if (reply) reply(YES, nil);
 }
-
-static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) {
-    return YES;
-}
+static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) { return YES; }
 
 void swizzle_objc_methods() {
     Class deviceCls = objc_getClass("UIDevice");
@@ -460,20 +260,14 @@ void swizzle_objc_methods() {
     if (laContextCls) {
         SEL sel1 = @selector(evaluatePolicy:localizedReason:reply:);
         Method m1 = class_getInstanceMethod(laContextCls, sel1);
-        if (m1) {
-            method_setImplementation(m1, (IMP)my_LAContext_evaluatePolicy);
-        }
+        if (m1) method_setImplementation(m1, (IMP)my_LAContext_evaluatePolicy);
         SEL sel2 = @selector(canEvaluatePolicy:error:);
         Method m2 = class_getInstanceMethod(laContextCls, sel2);
-        if (m2) {
-            method_setImplementation(m2, (IMP)my_LAContext_canEvaluatePolicy);
-        }
+        if (m2) method_setImplementation(m2, (IMP)my_LAContext_canEvaluatePolicy);
     }
 }
 
-// ============================================================================
-// fishhook
-// ============================================================================
+// ========== fishhook rebinding ==========
 void fishhook_bindings() {
     struct rebinding bindings[] = {
         {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
@@ -503,7 +297,7 @@ void fishhook_bindings() {
         {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
         {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
-        // New bindings
+        // New
         {"SecTrustEvaluate", (void *)my_SecTrustEvaluate, (void **)&orig_SecTrustEvaluate},
         {"SecTrustCopyPublicKey", (void *)my_SecTrustCopyPublicKey, (void **)&orig_SecTrustCopyPublicKey},
         {"SecTrustGetCertificateAtIndex", (void *)my_SecTrustGetCertificateAtIndex, (void **)&orig_SecTrustGetCertificateAtIndex},
@@ -532,67 +326,28 @@ void fishhook_bindings() {
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
-// ============================================================================
-// __interpose
-// ============================================================================
-typedef struct interpose_s {
-    void *new_func;
-    void *orig_func;
-} interpose_t;
-
-#define INTERPOSE(new, orig) \
-    __attribute__((used)) static const interpose_t interpose_##new \
-    __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
-
-static int my_printf(const char *format, ...);
-
+// ========== __interpose for printf ==========
+typedef struct interpose_s { void *new_func; void *orig_func; } interpose_t;
+#define INTERPOSE(new, orig) __attribute__((used)) static const interpose_t interpose_##new __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
+static int my_printf(const char *format, ...) {
+    if (strstr(format, "debug") || strstr(format, "jailbreak")) return 0;
+    va_list args; va_start(args, format); int ret = vprintf(format, args); va_end(args); return ret;
+}
 INTERPOSE(my_printf, printf)
 
-static int my_printf(const char *format, ...) {
-    if (strstr(format, "debug") || strstr(format, "jailbreak")) {
-        return 0;
-    }
-    va_list args;
-    va_start(args, format);
-    int ret = vprintf(format, args);
-    va_end(args);
-    return ret;
-}
-
-// ============================================================================
-// Environment checks
-// ============================================================================
+// ========== Environment checks (corrected) ==========
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
     return 1;
 #else
-    struct utsname systemInfo;
-    uname(&systemInfo);
-    if (strcmp(systemInfo.machine, "x86_64") == 0 || strcmp(systemInfo.machine, "i386") == 0)
-        return 1;
-    return 0;
+    struct utsname systemInfo; uname(&systemInfo);
+    return (strcmp(systemInfo.machine, "x86_64") == 0 || strcmp(systemInfo.machine, "i386") == 0);
 #endif
 }
 
 int is_jailbroken_paths() {
-    const char *paths[] = {
-        "/Applications/Cydia.app",
-        "/Library/MobileSubstrate/MobileSubstrate.dylib",
-        "/bin/bash",
-        "/usr/sbin/sshd",
-        "/etc/apt",
-        "/private/var/lib/apt/",
-        "/private/var/stash",
-        "/usr/libexec/cydia",
-        "/usr/sbin/frida-server",
-        "/usr/bin/ssh",
-        "/var/checkra1n.dmg",
-        "/.bootstrapped",
-        NULL
-    };
-    for (int i = 0; paths[i] != NULL; i++) {
-        if (access(paths[i], F_OK) == 0) return 1;
-    }
+    const char *paths[] = {"/Applications/Cydia.app", "/Library/MobileSubstrate/MobileSubstrate.dylib", "/bin/bash", "/usr/sbin/sshd", "/etc/apt", "/private/var/lib/apt/", "/private/var/stash", "/usr/libexec/cydia", "/usr/sbin/frida-server", "/usr/bin/ssh", "/var/checkra1n.dmg", "/.bootstrapped", NULL};
+    for (int i = 0; paths[i]; i++) if (access(paths[i], F_OK) == 0) return 1;
     return 0;
 }
 
@@ -600,31 +355,113 @@ int is_cydia_installed() {
 #if TARGET_OS_IPHONE
     Class lsApplicationWorkspace = objc_getClass("LSApplicationWorkspace");
     if (lsApplicationWorkspace) {
-        SEL defaultWorkspace = sel_registerName("defaultWorkspace");
-        SEL openApplicationWithBundleID = sel_registerName("openApplicationWithBundleID:");
-        id workspace = ((id (*)(id, SEL))objc_msgSend)((id)lsApplicationWorkspace, defaultWorkspace);
+        id workspace = ((id (*)(id, SEL))objc_msgSend)((id)lsApplicationWorkspace, sel_registerName("defaultWorkspace"));
         if (workspace) {
-            int opened = ((int (*)(id, SEL, id))objc_msgSend)(workspace, openApplicationWithBundleID, @"com.saurik.Cydia");
-            return opened;
+            return ((int (*)(id, SEL, id))objc_msgSend)(workspace, sel_registerName("openApplicationWithBundleID:"), @"com.saurik.Cydia");
         }
     }
 #endif
     return 0;
 }
 
-int is_dyld_hijacked() {
-    if (getenv("DYLD_INSERT_LIBRARIES") != NULL) return 1;
-    if (getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL) return 1;
+int is_dyld_hijacked() { return (getenv("DYLD_INSERT_LIBRARIES") != NULL || getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL); }
+
+// ✅ الدالة المصححة نهائياً
+int is_debugger_attached() {
+    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
+    struct kinfo_proc info;
+    size_t size = sizeof(info);
+    info.kp_proc.p_flag = 0;
+    if (sysctl(mib, 4, &info, &size, NULL, 0) != 0) return 0;
+    return (info.kp_proc.p_flag & P_TRACED) != 0;
+}
+
+int ptrace_deny_attach() { load_real_ptrace(); return (real_ptrace && real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1); }
+int is_substrate_loaded() {
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (strstr(name, "MobileSubstrate") || strstr(name, "Substrate") || strstr(name, "CydiaSubstrate")) return 1;
+    }
+    return 0;
+}
+int is_ssh_running() { return access("/usr/sbin/sshd", F_OK) == 0; }
+int is_apt_installed() { return access("/etc/apt", F_OK) == 0; }
+int is_frida_installed() { return access("/usr/sbin/frida-server", F_OK) == 0; }
+int is_debugserver_installed() { return access("/Developer/usr/bin/debugserver", F_OK) == 0; }
+
+int check_provisioning() {
+    char execPath[PATH_MAX];
+    uint32_t size = sizeof(execPath);
+    if (_NSGetExecutablePath(execPath, &size) != 0) return 0;
+    char *lastSlash = strrchr(execPath, '/');
+    if (!lastSlash) return 0;
+    *lastSlash = '\0';
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/embedded.mobileprovision", execPath);
+    FILE *fp = fopen(path, "r");
+    if (!fp) return 0;
+    fseek(fp, 0, SEEK_END); long len = ftell(fp); fseek(fp, 0, SEEK_SET);
+    char *data = (char *)malloc(len + 1); fread(data, 1, len, fp); fclose(fp); data[len] = '\0';
+    int debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
+    free(data); return debuggable;
+}
+
+int check_env() {
+    const char *vars[] = {"DYLD_PRINT_TO_FILE", "DYLD_INSERT_LIBRARIES", "CFNETWORK_DIAGNOSTICS", "OBJC_DISABLE_VALIDATION", NULL};
+    for (int i = 0; vars[i]; i++) if (getenv(vars[i]) != NULL) return 1;
     return 0;
 }
 
-int is_debugger_attached() {
-    int name[4];
-    struct kinfo_proc info;
-    size_t info_size = sizeof(info);
-    info.kp_proc.p_flag = 0;
-    name[0] = CTL_KERN;
-    name[1] = KERN_PROC;
-    name[2] = KERN_PROC_PID;
-    name[3] = getpid();
-    if (sysctl(name, 4, &
+int check_ppid() {
+    pid_t ppid = getppid();
+    char path[256]; snprintf(path, sizeof(path), "/proc/%d/exe", ppid);
+    if (access(path, F_OK) != 0) return 0;
+    char target[256]; ssize_t len = readlink(path, target, sizeof(target)-1);
+    if (len == -1) return 0;
+    target[len] = '\0';
+    return (strstr(target, "debugserver") || strstr(target, "lldb"));
+}
+
+int is_frida_loaded() { return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL); }
+
+void perform_security_checks() {
+    int threat_level = 0;
+    if (is_simulator()) threat_level += 10;
+    if (is_jailbroken_paths()) threat_level += 20;
+    if (is_cydia_installed()) threat_level += 10;
+    if (is_dyld_hijacked()) threat_level += 30;
+    if (is_debugger_attached()) threat_level += 50;
+    if (ptrace_deny_attach()) threat_level += 30;
+    if (is_substrate_loaded()) threat_level += 20;
+    if (is_ssh_running()) threat_level += 10;
+    if (is_apt_installed()) threat_level += 10;
+    if (is_frida_installed() || is_frida_loaded()) threat_level += 40;
+    if (is_debugserver_installed()) threat_level += 20;
+    if (check_provisioning()) threat_level += 30;
+    if (check_env()) threat_level += 10;
+    if (check_ppid()) threat_level += 40;
+
+    if (threat_level > 50) {
+        usleep(rand() % 100000);
+        _exit(1);
+    }
+}
+
+// ========== Constructor with 50s delay and message ==========
+__attribute__((constructor))
+void init_hook() {
+    // تأخير 50 ثانية
+    sleep(50);
+    
+    // إظهار شعار تم تشغيل الحماية
+    printf("\n========================================\n");
+    printf("      تم تشغيل الحماية بنجاح           \n");
+    printf("========================================\n");
+    
+    srand((unsigned int)time(NULL));
+    load_real_ptrace();
+    perform_security_checks();
+    fishhook_bindings();
+    swizzle_objc_methods();
+}
