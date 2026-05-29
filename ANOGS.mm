@@ -18,7 +18,6 @@
 #import <dispatch/dispatch.h>
 #import <sys/syscall.h>
 #import <pthread.h>
-#import <CommonCrypto/CommonAES.h>  // لتعريف AES_KEY
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -28,6 +27,9 @@
 #endif
 
 #include "fishhook.h"
+
+// تعريف AES_KEY للدوال من OpenSSL (بدون الحاجة إلى openssl/aes.h)
+typedef struct { int dummy; } AES_KEY;
 
 // ptrace
 #define PT_DENY_ATTACH 31
@@ -130,7 +132,7 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == inLen) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// الدوال الجديدة (معطلة أو معادية)
+// الدوال الجديدة (معطلة)
 static int my_task_info(task_name_t task, task_flavor_t flavor, task_info_t info, mach_msg_type_number_t *count) { return KERN_FAILURE; }
 static int my_task_get_special_port(task_t task, int which, mach_port_t *port) { return KERN_FAILURE; }
 static int my_stat(const char *path, struct stat *buf) { return -1; }
@@ -144,9 +146,8 @@ static int my_dladdr(const void *addr, Dl_info *info) { return 0; }
 static int my_getmntinfo(struct statfs **mntbufp, int flags) { return 0; }
 static int my_csops(pid_t pid, unsigned int ops, void *data, size_t len) { return 0; }
 static int my_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void*(*start)(void*), void *arg) {
-    // منع إنشاء خيوط جديدة (اختياري). لو أردت السماح استخدم الأصل:
-    // return orig_pthread_create ? orig_pthread_create(thread, attr, start, arg) : -1;
-    return -1; // تعطيل إنشاء الخيوط
+    // منع إنشاء خيوط جديدة
+    return -1;
 }
 static int my_pthread_attr_init(pthread_attr_t *attr) { return orig_pthread_attr_init ? orig_pthread_attr_init(attr) : -1; }
 static int my_pthread_attr_setdetachstate(pthread_attr_t *attr, int state) { return orig_pthread_attr_setdetachstate ? orig_pthread_attr_setdetachstate(attr, state) : -1; }
@@ -250,8 +251,7 @@ void fishhook_bindings() {
 // Constructor: يتم تنفيذه فور تحميل المكتبة
 __attribute__((constructor))
 void init_hook() {
-    show_protection_logo();        // إظهار الشعار أولاً
+    show_protection_logo();        // إظهار الشعار فوراً
     fishhook_bindings();           // تفعيل الهوكات
     swizzle_objc_methods();        // تفعيل الـ swizzling
-    // يمكنك إضافة perform_security_checks() إذا أردت، لكنها قد تسبب إنهاء التطبيق
 }
