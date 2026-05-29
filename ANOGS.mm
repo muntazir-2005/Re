@@ -15,6 +15,7 @@
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
+#import <SystemConfiguration/SystemConfiguration.h>  // أضف هذا السطر
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -24,6 +25,7 @@
 
 #include "fishhook.h"
 
+// ... باقي الكود ...
 // ptrace – not available in iOS SDK, use dynamic lookup
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
