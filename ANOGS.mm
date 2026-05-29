@@ -28,7 +28,7 @@
 
 #include "fishhook.h"
 
-// تعريف AES_KEY للدوال من OpenSSL (بدون الحاجة إلى openssl/aes.h)
+// تعريف هيكل dummy لـ AES_KEY لأن OpenSSL غير موجود في iOS SDK
 typedef struct { int dummy; } AES_KEY;
 
 // ptrace
@@ -44,7 +44,7 @@ static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     return real_ptrace ? real_ptrace(request, pid, addr, data) : 0;
 }
 
-// ========== Original function pointers (all hooks) ==========
+// ========== Original function pointers ==========
 static int (*orig_sysctl)(int*, u_int, void*, size_t*, void*, size_t);
 static int (*orig_sysctlbyname)(const char*, void*, size_t*, void*, size_t);
 static void* (*orig_dlopen)(const char*, int);
@@ -64,7 +64,7 @@ static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef, SecKeyAlgorithm, CFDat
 static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef, SecKeyAlgorithm, CFDataRef, CFDataRef, CFErrorRef*);
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation, CCAlgorithm, CCOptions, const void*, size_t, const void*, const void*, size_t, void*, size_t, size_t*);
 
-// الدوال الجديدة
+// الدوال الجديدة المطلوبة
 static int (*orig_task_info)(task_name_t, task_flavor_t, task_info_t, mach_msg_type_number_t*);
 static int (*orig_task_get_special_port)(task_t, int, mach_port_t*);
 static int (*orig_stat)(const char*, struct stat*);
@@ -115,7 +115,6 @@ static int my_vm_read_overwrite(vm_map_t task, vm_address_t addr, vm_size_t size
 static int my_vm_write(vm_map_t task, vm_address_t addr, vm_offset_t data, mach_msg_type_number_t cnt) { return KERN_FAILURE; }
 static int my_vm_protect(vm_map_t task, vm_address_t addr, vm_size_t size, boolean_t max, vm_prot_t prot) { return KERN_SUCCESS; }
 static int my_mach_vm_protect(vm_map_t task, mach_vm_address_t addr, mach_vm_size_t size, boolean_t max, vm_prot_t prot) { return KERN_SUCCESS; }
-
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef q, CFTypeRef *r) { return errSecItemNotFound; }
 static OSStatus my_SecItemAdd(CFDictionaryRef a, CFTypeRef *r) { return errSecDuplicateItem; }
 static OSStatus my_SecItemUpdate(CFDictionaryRef q, CFDictionaryRef a) { return errSecItemNotFound; }
@@ -132,7 +131,7 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == inLen) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// الدوال الجديدة (معطلة)
+// هوكات الدوال الجديدة
 static int my_task_info(task_name_t task, task_flavor_t flavor, task_info_t info, mach_msg_type_number_t *count) { return KERN_FAILURE; }
 static int my_task_get_special_port(task_t task, int which, mach_port_t *port) { return KERN_FAILURE; }
 static int my_stat(const char *path, struct stat *buf) { return -1; }
@@ -145,10 +144,7 @@ static kern_return_t my_mach_vm_region_recurse(vm_map_t map, mach_vm_address_t *
 static int my_dladdr(const void *addr, Dl_info *info) { return 0; }
 static int my_getmntinfo(struct statfs **mntbufp, int flags) { return 0; }
 static int my_csops(pid_t pid, unsigned int ops, void *data, size_t len) { return 0; }
-static int my_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void*(*start)(void*), void *arg) {
-    // منع إنشاء خيوط جديدة
-    return -1;
-}
+static int my_pthread_create(pthread_t *thread, const pthread_attr_t *attr, void*(*start)(void*), void *arg) { return -1; } // منع إنشاء خيوط جديدة
 static int my_pthread_attr_init(pthread_attr_t *attr) { return orig_pthread_attr_init ? orig_pthread_attr_init(attr) : -1; }
 static int my_pthread_attr_setdetachstate(pthread_attr_t *attr, int state) { return orig_pthread_attr_setdetachstate ? orig_pthread_attr_setdetachstate(attr, state) : -1; }
 static int my_pthread_attr_setstacksize(pthread_attr_t *attr, size_t size) { return orig_pthread_attr_setstacksize ? orig_pthread_attr_setstacksize(attr, size) : -1; }
@@ -157,7 +153,7 @@ static void my_AES_encrypt(const unsigned char *in, unsigned char *out, const AE
 static void my_aes_cbc_encrypt(const unsigned char *in, unsigned char *out, size_t len, const AES_KEY *key, unsigned char *ivec, const int enc) { if (out) memset(out, 0, len); }
 static void my_rijndael(void *in, void *out, const void *key) { if (out) memset(out, 0, 16); }
 
-// Objective-C swizzling
+// ========== Objective-C swizzling ==========
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
     return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
@@ -184,7 +180,7 @@ void swizzle_objc_methods() {
     }
 }
 
-// إظهار شعار الحماية فوراً
+// ========== إظهار شعار الحماية فوراً ==========
 void show_protection_logo() {
     NSLog(@"⚠️ تم تشغيل الحماية - Protection Active ⚠️");
 #if TARGET_OS_IPHONE
@@ -203,55 +199,55 @@ void show_protection_logo() {
 #endif
 }
 
-// ربط جميع الدوال باستخدام fishhook
+// ========== ربط الدوال باستخدام fishhook ==========
 void fishhook_bindings() {
     struct rebinding bindings[] = {
-        {"sysctl", my_sysctl, (void**)&orig_sysctl},
-        {"sysctlbyname", my_sysctlbyname, (void**)&orig_sysctlbyname},
-        {"dlopen", my_dlopen, (void**)&orig_dlopen},
-        {"dlsym", my_dlsym, (void**)&orig_dlsym},
-        {"task_for_pid", my_task_for_pid, (void**)&orig_task_for_pid},
-        {"vm_read_overwrite", my_vm_read_overwrite, (void**)&orig_vm_read_overwrite},
-        {"vm_write", my_vm_write, (void**)&orig_vm_write},
-        {"vm_protect", my_vm_protect, (void**)&orig_vm_protect},
-        {"mach_vm_protect", my_mach_vm_protect, (void**)&orig_mach_vm_protect},
-        {"SecItemCopyMatching", my_SecItemCopyMatching, (void**)&orig_SecItemCopyMatching},
-        {"SecItemAdd", my_SecItemAdd, (void**)&orig_SecItemAdd},
-        {"SecItemUpdate", my_SecItemUpdate, (void**)&orig_SecItemUpdate},
-        {"SecItemDelete", my_SecItemDelete, (void**)&orig_SecItemDelete},
-        {"SecKeyCreateRandomKey", my_SecKeyCreateRandomKey, (void**)&orig_SecKeyCreateRandomKey},
-        {"SecKeyCopyPublicKey", my_SecKeyCopyPublicKey, (void**)&orig_SecKeyCopyPublicKey},
-        {"SecKeyCreateSignature", my_SecKeyCreateSignature, (void**)&orig_SecKeyCreateSignature},
-        {"SecKeyVerifySignature", my_SecKeyVerifySignature, (void**)&orig_SecKeyVerifySignature},
-        {"CCCrypt", my_CCCrypt, (void**)&orig_CCCrypt},
-        {"task_info", my_task_info, (void**)&orig_task_info},
-        {"task_get_special_port", my_task_get_special_port, (void**)&orig_task_get_special_port},
-        {"stat", my_stat, (void**)&orig_stat},
-        {"lstat", my_lstat, (void**)&orig_lstat},
-        {"statfs", my_statfs, (void**)&orig_statfs},
-        {"fopen", my_fopen, (void**)&orig_fopen},
-        {"access", my_access, (void**)&orig_access},
-        {"proc_regionfilename", my_proc_regionfilename, (void**)&orig_proc_regionfilename},
-        {"mach_vm_region_recurse", my_mach_vm_region_recurse, (void**)&orig_mach_vm_region_recurse},
-        {"dladdr", my_dladdr, (void**)&orig_dladdr},
-        {"getmntinfo", my_getmntinfo, (void**)&orig_getmntinfo},
-        {"csops", my_csops, (void**)&orig_csops},
-        {"pthread_create", my_pthread_create, (void**)&orig_pthread_create},
-        {"pthread_attr_init", my_pthread_attr_init, (void**)&orig_pthread_attr_init},
-        {"pthread_attr_setdetachstate", my_pthread_attr_setdetachstate, (void**)&orig_pthread_attr_setdetachstate},
-        {"pthread_attr_setstacksize", my_pthread_attr_setstacksize, (void**)&orig_pthread_attr_setstacksize},
-        {"pthread_attr_destroy", my_pthread_attr_destroy, (void**)&orig_pthread_attr_destroy},
-        {"AES_encrypt", my_AES_encrypt, (void**)&orig_AES_encrypt},
-        {"aes_cbc_encrypt", my_aes_cbc_encrypt, (void**)&orig_aes_cbc_encrypt},
-        {"rijndael", my_rijndael, (void**)&orig_rijndael}
+        {"sysctl", (void*)my_sysctl, (void**)&orig_sysctl},
+        {"sysctlbyname", (void*)my_sysctlbyname, (void**)&orig_sysctlbyname},
+        {"dlopen", (void*)my_dlopen, (void**)&orig_dlopen},
+        {"dlsym", (void*)my_dlsym, (void**)&orig_dlsym},
+        {"task_for_pid", (void*)my_task_for_pid, (void**)&orig_task_for_pid},
+        {"vm_read_overwrite", (void*)my_vm_read_overwrite, (void**)&orig_vm_read_overwrite},
+        {"vm_write", (void*)my_vm_write, (void**)&orig_vm_write},
+        {"vm_protect", (void*)my_vm_protect, (void**)&orig_vm_protect},
+        {"mach_vm_protect", (void*)my_mach_vm_protect, (void**)&orig_mach_vm_protect},
+        {"SecItemCopyMatching", (void*)my_SecItemCopyMatching, (void**)&orig_SecItemCopyMatching},
+        {"SecItemAdd", (void*)my_SecItemAdd, (void**)&orig_SecItemAdd},
+        {"SecItemUpdate", (void*)my_SecItemUpdate, (void**)&orig_SecItemUpdate},
+        {"SecItemDelete", (void*)my_SecItemDelete, (void**)&orig_SecItemDelete},
+        {"SecKeyCreateRandomKey", (void*)my_SecKeyCreateRandomKey, (void**)&orig_SecKeyCreateRandomKey},
+        {"SecKeyCopyPublicKey", (void*)my_SecKeyCopyPublicKey, (void**)&orig_SecKeyCopyPublicKey},
+        {"SecKeyCreateSignature", (void*)my_SecKeyCreateSignature, (void**)&orig_SecKeyCreateSignature},
+        {"SecKeyVerifySignature", (void*)my_SecKeyVerifySignature, (void**)&orig_SecKeyVerifySignature},
+        {"CCCrypt", (void*)my_CCCrypt, (void**)&orig_CCCrypt},
+        {"task_info", (void*)my_task_info, (void**)&orig_task_info},
+        {"task_get_special_port", (void*)my_task_get_special_port, (void**)&orig_task_get_special_port},
+        {"stat", (void*)my_stat, (void**)&orig_stat},
+        {"lstat", (void*)my_lstat, (void**)&orig_lstat},
+        {"statfs", (void*)my_statfs, (void**)&orig_statfs},
+        {"fopen", (void*)my_fopen, (void**)&orig_fopen},
+        {"access", (void*)my_access, (void**)&orig_access},
+        {"proc_regionfilename", (void*)my_proc_regionfilename, (void**)&orig_proc_regionfilename},
+        {"mach_vm_region_recurse", (void*)my_mach_vm_region_recurse, (void**)&orig_mach_vm_region_recurse},
+        {"dladdr", (void*)my_dladdr, (void**)&orig_dladdr},
+        {"getmntinfo", (void*)my_getmntinfo, (void**)&orig_getmntinfo},
+        {"csops", (void*)my_csops, (void**)&orig_csops},
+        {"pthread_create", (void*)my_pthread_create, (void**)&orig_pthread_create},
+        {"pthread_attr_init", (void*)my_pthread_attr_init, (void**)&orig_pthread_attr_init},
+        {"pthread_attr_setdetachstate", (void*)my_pthread_attr_setdetachstate, (void**)&orig_pthread_attr_setdetachstate},
+        {"pthread_attr_setstacksize", (void*)my_pthread_attr_setstacksize, (void**)&orig_pthread_attr_setstacksize},
+        {"pthread_attr_destroy", (void*)my_pthread_attr_destroy, (void**)&orig_pthread_attr_destroy},
+        {"AES_encrypt", (void*)my_AES_encrypt, (void**)&orig_AES_encrypt},
+        {"aes_cbc_encrypt", (void*)my_aes_cbc_encrypt, (void**)&orig_aes_cbc_encrypt},
+        {"rijndael", (void*)my_rijndael, (void**)&orig_rijndael}
     };
     rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
-// Constructor: يتم تنفيذه فور تحميل المكتبة
+// ========== Constructor: تفعيل فوري ==========
 __attribute__((constructor))
 void init_hook() {
-    show_protection_logo();        // إظهار الشعار فوراً
-    fishhook_bindings();           // تفعيل الهوكات
-    swizzle_objc_methods();        // تفعيل الـ swizzling
+    show_protection_logo();        // شعار فوري
+    fishhook_bindings();           // ربط جميع الدوال
+    swizzle_objc_methods();        // تبديل دوال Objective-C
 }
