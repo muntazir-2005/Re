@@ -16,8 +16,6 @@
 #import <Security/SecKey.h>
 #import <time.h>
 #import <SystemConfiguration/SystemConfiguration.h>
-#import <dispatch/dispatch.h>
-#import <pthread.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -35,7 +33,7 @@ static void load_real_ptrace(void) {
     if (!real_ptrace) real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
 }
 
-// OpenSSL types
+// OpenSSL types (declarations only)
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -81,16 +79,6 @@ static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *bp, EVP_PKEY **x, pem_pass
 static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, int type);
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
-
-// Environment checks
-static bool (*orig_is_jb)(void);
-static bool (*orig_ROOTED)(void);
-static bool (*orig_DEBUGGER_ATTACHED)(void);
-static bool (*orig_isDebuggerAttached)(void);
-static bool (*orig_checkJailbreak)(void);
-static bool (*orig_hasCydia)(void);
-static bool (*orig_isJailbroken)(void);
-static bool (*orig_amIBeingDebugged)(void);
 
 // ========== Security / Trust functions ==========
 static OSStatus (*orig_SecTrustEvaluate)(SecTrustRef trust, SecTrustResultType *result);
@@ -191,15 +179,6 @@ static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_
 static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type) { return 1; }
 static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
 static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
-
-static bool my_is_jb(void) { return false; }
-static bool my_ROOTED(void) { return false; }
-static bool my_DEBUGGER_ATTACHED(void) { return false; }
-static bool my_isDebuggerAttached(void) { return false; }
-static bool my_checkJailbreak(void) { return false; }
-static bool my_hasCydia(void) { return false; }
-static bool my_isJailbroken_c(void) { return false; }
-static bool my_amIBeingDebugged(void) { return false; }
 
 // ========== Security replacements ==========
 static OSStatus my_SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result) {
@@ -334,138 +313,16 @@ static int my_printf(const char *format, ...) {
 }
 INTERPOSE(my_printf, printf)
 
-// ========== Environment checks ==========
-int is_simulator() {
-#if TARGET_IPHONE_SIMULATOR
-    return 1;
-#else
-    struct utsname systemInfo; uname(&systemInfo);
-    return (strcmp(systemInfo.machine, "x86_64") == 0 || strcmp(systemInfo.machine, "i386") == 0);
-#endif
-}
-
-int is_jailbroken_paths() {
-    const char *paths[] = {"/Applications/Cydia.app", "/Library/MobileSubstrate/MobileSubstrate.dylib", "/bin/bash", "/usr/sbin/sshd", "/etc/apt", "/private/var/lib/apt/", "/private/var/stash", "/usr/libexec/cydia", "/usr/sbin/frida-server", "/usr/bin/ssh", "/var/checkra1n.dmg", "/.bootstrapped", NULL};
-    for (int i = 0; paths[i]; i++) if (access(paths[i], F_OK) == 0) return 1;
-    return 0;
-}
-
-int is_cydia_installed() {
-#if TARGET_OS_IPHONE
-    Class lsApplicationWorkspace = objc_getClass("LSApplicationWorkspace");
-    if (lsApplicationWorkspace) {
-        id workspace = ((id (*)(id, SEL))objc_msgSend)((id)lsApplicationWorkspace, sel_registerName("defaultWorkspace"));
-        if (workspace) {
-            return ((int (*)(id, SEL, id))objc_msgSend)(workspace, sel_registerName("openApplicationWithBundleID:"), @"com.saurik.Cydia");
-        }
-    }
-#endif
-    return 0;
-}
-
-int is_dyld_hijacked() { return (getenv("DYLD_INSERT_LIBRARIES") != NULL || getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL); }
-
-int is_debugger_attached() {
-    int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
-    struct kinfo_proc info;
-    size_t size = sizeof(info);
-    info.kp_proc.p_flag = 0;
-    if (sysctl(mib, 4, &info, &size, NULL, 0) != 0) return 0;
-    return (info.kp_proc.p_flag & P_TRACED) != 0;
-}
-
-int ptrace_deny_attach() { load_real_ptrace(); return (real_ptrace && real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1); }
-int is_substrate_loaded() {
-    uint32_t count = _dyld_image_count();
-    for (uint32_t i = 0; i < count; i++) {
-        const char *name = _dyld_get_image_name(i);
-        if (strstr(name, "MobileSubstrate") || strstr(name, "Substrate") || strstr(name, "CydiaSubstrate")) return 1;
-    }
-    return 0;
-}
-int is_ssh_running() { return access("/usr/sbin/sshd", F_OK) == 0; }
-int is_apt_installed() { return access("/etc/apt", F_OK) == 0; }
-int is_frida_installed() { return access("/usr/sbin/frida-server", F_OK) == 0; }
-int is_debugserver_installed() { return access("/Developer/usr/bin/debugserver", F_OK) == 0; }
-
-int check_provisioning() {
-    char execPath[PATH_MAX];
-    uint32_t size = sizeof(execPath);
-    if (_NSGetExecutablePath(execPath, &size) != 0) return 0;
-    char *lastSlash = strrchr(execPath, '/');
-    if (!lastSlash) return 0;
-    *lastSlash = '\0';
-    char path[PATH_MAX];
-    snprintf(path, sizeof(path), "%s/embedded.mobileprovision", execPath);
-    FILE *fp = fopen(path, "r");
-    if (!fp) return 0;
-    fseek(fp, 0, SEEK_END); long len = ftell(fp); fseek(fp, 0, SEEK_SET);
-    char *data = (char *)malloc(len + 1); fread(data, 1, len, fp); fclose(fp); data[len] = '\0';
-    int debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
-    free(data); return debuggable;
-}
-
-int check_env() {
-    const char *vars[] = {"DYLD_PRINT_TO_FILE", "DYLD_INSERT_LIBRARIES", "CFNETWORK_DIAGNOSTICS", "OBJC_DISABLE_VALIDATION", NULL};
-    for (int i = 0; vars[i]; i++) if (getenv(vars[i]) != NULL) return 1;
-    return 0;
-}
-
-int check_ppid() {
-    pid_t ppid = getppid();
-    char path[256]; snprintf(path, sizeof(path), "/proc/%d/exe", ppid);
-    if (access(path, F_OK) != 0) return 0;
-    char target[256]; ssize_t len = readlink(path, target, sizeof(target)-1);
-    if (len == -1) return 0;
-    target[len] = '\0';
-    return (strstr(target, "debugserver") || strstr(target, "lldb"));
-}
-
-int is_frida_loaded() { return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL); }
-
-void perform_security_checks() {
-    int threat_level = 0;
-    if (is_simulator()) threat_level += 10;
-    if (is_jailbroken_paths()) threat_level += 20;
-    if (is_cydia_installed()) threat_level += 10;
-    if (is_dyld_hijacked()) threat_level += 30;
-    if (is_debugger_attached()) threat_level += 50;
-    if (ptrace_deny_attach()) threat_level += 30;
-    if (is_substrate_loaded()) threat_level += 20;
-    if (is_ssh_running()) threat_level += 10;
-    if (is_apt_installed()) threat_level += 10;
-    if (is_frida_installed() || is_frida_loaded()) threat_level += 40;
-    if (is_debugserver_installed()) threat_level += 20;
-    if (check_provisioning()) threat_level += 30;
-    if (check_env()) threat_level += 10;
-    if (check_ppid()) threat_level += 40;
-
-    if (threat_level > 50) {
-        usleep(rand() % 100000);
-        _exit(1);
-    }
-}
-
-// ========== Constructor using pthread (avoid GCD initialization issues) ==========
-static void *delayed_init_thread(void *arg) {
-    sleep(50);  // انتظار 50 ثانية في خيط منفصل، دون تعليق التطبيق
-    // بعد انتهاء الانتظار، ننفذ كل شيء على الخيط الرئيسي لتجنب مشاكل الـ hooking
-    dispatch_async(dispatch_get_main_queue(), ^{
-        printf("\n========================================\n");
-        printf("      تم تشغيل الحماية بنجاح           \n");
-        printf("========================================\n");
-        srand((unsigned int)time(NULL));
-        load_real_ptrace();
-        perform_security_checks();
-        fishhook_bindings();
-        swizzle_objc_methods();
-    });
-    return NULL;
-}
-
+// ========== Constructor with immediate execution (no delay, no crash) ==========
 __attribute__((constructor))
 void init_hook() {
-    pthread_t thread;
-    pthread_create(&thread, NULL, delayed_init_thread, NULL);
-    pthread_detach(thread);
+    printf("\n========================================\n");
+    printf("      تم تشغيل الحماية بنجاح           \n");
+    printf("========================================\n");
+    
+    srand((unsigned int)time(NULL));
+    load_real_ptrace();
+    // تم إزالة perform_security_checks() لأنها قد تسبب exit(1) وتوقف التطبيق
+    fishhook_bindings();
+    swizzle_objc_methods();
 }
