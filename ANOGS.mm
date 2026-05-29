@@ -16,6 +16,7 @@
 #import <Security/SecKey.h>
 #import <time.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+#import <dispatch/dispatch.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -33,7 +34,7 @@ static void load_real_ptrace(void) {
     if (!real_ptrace) real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
 }
 
-// OpenSSL types (declarations only)
+// OpenSSL types
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -80,7 +81,7 @@ static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, i
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Environment checks (original, if they exist)
+// Environment checks (original)
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -295,7 +296,6 @@ void fishhook_bindings() {
         {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
         {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
-        // New hooks
         {"SecTrustEvaluate", (void *)my_SecTrustEvaluate, (void **)&orig_SecTrustEvaluate},
         {"SecTrustCopyPublicKey", (void *)my_SecTrustCopyPublicKey, (void **)&orig_SecTrustCopyPublicKey},
         {"SecTrustGetCertificateAtIndex", (void *)my_SecTrustGetCertificateAtIndex, (void **)&orig_SecTrustGetCertificateAtIndex},
@@ -333,7 +333,7 @@ static int my_printf(const char *format, ...) {
 }
 INTERPOSE(my_printf, printf)
 
-// ========== Environment checks (corrected) ==========
+// ========== Environment checks ==========
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
     return 1;
@@ -364,7 +364,6 @@ int is_cydia_installed() {
 
 int is_dyld_hijacked() { return (getenv("DYLD_INSERT_LIBRARIES") != NULL || getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL); }
 
-// ✅ Corrected debugger detection
 int is_debugger_attached() {
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
     struct kinfo_proc info;
@@ -446,20 +445,18 @@ void perform_security_checks() {
     }
 }
 
-// ========== Constructor with 50s delay and message ==========
+// ========== Constructor with 50-second delay using dispatch_after ==========
 __attribute__((constructor))
 void init_hook() {
-    // تأخير 50 ثانية
-    sleep(50);
-    
-    // إظهار شعار تم تشغيل الحماية
-    printf("\n========================================\n");
-    printf("      تم تشغيل الحماية بنجاح           \n");
-    printf("========================================\n");
-    
-    srand((unsigned int)time(NULL));
-    load_real_ptrace();
-    perform_security_checks();
-    fishhook_bindings();
-    swizzle_objc_methods();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+        printf("\n========================================\n");
+        printf("      تم تشغيل الحماية بنجاح           \n");
+        printf("========================================\n");
+
+        srand((unsigned int)time(NULL));
+        load_real_ptrace();
+        perform_security_checks();
+        fishhook_bindings();
+        swizzle_objc_methods();
+    });
 }
