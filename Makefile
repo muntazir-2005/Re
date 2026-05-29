@@ -1,5 +1,3 @@
-# إنشاء Makefile جديد مع tabs صحيحة
-cat > Makefile << 'EOF'
 CC = xcrun -sdk iphoneos clang
 ARCHS = arm64
 SDK = $(shell xcrun -sdk iphoneos --show-sdk-path)
@@ -24,4 +22,3 @@ ANOGS.dylib: $(OBJ)
 
 clean:
 	rm -f $(OBJ) ANOGS.dylib
-EOF
