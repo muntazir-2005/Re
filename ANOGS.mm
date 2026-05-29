@@ -16,6 +16,7 @@
 #import <Security/SecKey.h>
 #import <time.h>
 #import <SystemConfiguration/SystemConfiguration.h>
+#import <dispatch/dispatch.h> // تم إضافة هذا الملف للتعامل مع التوقيت الآمن GCD
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -322,7 +323,44 @@ void init_hook() {
     
     srand((unsigned int)time(NULL));
     load_real_ptrace();
-    // تم إزالة perform_security_checks() لأنها قد تسبب exit(1) وتوقف التطبيق
     fishhook_bindings();
     swizzle_objc_methods();
+
+    // جزء إظهار الرسالة الترحيبية بعد 5 ثوانٍ بشكل آمن بالخلفية
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        
+        // طباعة داخل الـ Console
+        printf("\n[Welcome] أهلاً بك! تم تحميل الأداة بنجاح.\n");
+        
+        #if TARGET_OS_IPHONE
+        // جلب كلاسات النظام ديناميكياً لضمان التوافق مع الكود الخاص بك
+        Class alertCls = objc_getClass("UIAlertController");
+        Class actionCls = objc_getClass("UIAlertAction");
+        Class appCls = objc_getClass("UIApplication");
+        
+        if (alertCls && actionCls && appCls) {
+            // إنشاء نافذة التنبيه (Alert)
+            id alert = [alertCls alertControllerWithTitle:@"مرحباً بك"
+                                                 message:@"تم تشغيل الأداة بنجاح!"
+                                          preferredStyle:1]; // 1 تعني Alert
+            
+            // إضافة زر موافق للإغلاق
+            id defaultAction = [actionCls actionWithTitle:@"موافق" style:0 handler:nil];
+            ((void (*)(id, SEL, id))objc_msgSend)(alert, sel_registerName("addAction:"), defaultAction);
+            
+            // العثور على الواجهة الحالية للتطبيق لعرض التنبيه فوقها
+            id sharedApp = ((id (*)(id, SEL))objc_msgSend)(appCls, sel_registerName("sharedApplication"));
+            if (sharedApp) {
+                id keyWindow = ((id (*)(id, SEL))objc_msgSend)(sharedApp, sel_registerName("keyWindow"));
+                if (keyWindow) {
+                    id rootViewController = ((id (*)(id, SEL))objc_msgSend)(keyWindow, sel_registerName("rootViewController"));
+                    if (rootViewController) {
+                        // عرض الرسالة على الشاشة للمستخدم
+                        ((void (*)(id, SEL, id, BOOL, id))objc_msgSend)(rootViewController, sel_registerName("presentViewController:animated:completion:"), alert, YES, nil);
+                    }
+                }
+            }
+        }
+        #endif
+    });
 }
