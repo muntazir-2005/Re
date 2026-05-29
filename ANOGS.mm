@@ -15,7 +15,7 @@
 #import <Security/Security.h>
 #import <Security/SecKey.h>
 #import <time.h>
-#import <SystemConfiguration/SystemConfiguration.h>   // ✅ تمت الإضافة
+#import <SystemConfiguration/SystemConfiguration.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -30,12 +30,10 @@
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
 static void load_real_ptrace(void) {
-    if (!real_ptrace) {
-        real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
-    }
+    if (!real_ptrace) real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
 }
 
-// OpenSSL types
+// OpenSSL types (declarations only)
 typedef struct rsa_st RSA;
 typedef struct evp_pkey_st EVP_PKEY;
 typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
@@ -82,7 +80,7 @@ static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, i
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Environment checks (original)
+// Environment checks (original, if they exist)
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -92,7 +90,7 @@ static bool (*orig_hasCydia)(void);
 static bool (*orig_isJailbroken)(void);
 static bool (*orig_amIBeingDebugged)(void);
 
-// ========== NEW: Security / Trust functions ==========
+// ========== Security / Trust functions ==========
 static OSStatus (*orig_SecTrustEvaluate)(SecTrustRef trust, SecTrustResultType *result);
 static SecKeyRef (*orig_SecTrustCopyPublicKey)(SecTrustRef trust);
 static SecCertificateRef (*orig_SecTrustGetCertificateAtIndex)(SecTrustRef trust, CFIndex ix);
@@ -201,7 +199,7 @@ static bool my_hasCydia(void) { return false; }
 static bool my_isJailbroken_c(void) { return false; }
 static bool my_amIBeingDebugged(void) { return false; }
 
-// ========== New Security replacements ==========
+// ========== Security replacements ==========
 static OSStatus my_SecTrustEvaluate(SecTrustRef trust, SecTrustResultType *result) {
     if (result) *result = kSecTrustResultProceed;
     return errSecSuccess;
@@ -297,7 +295,7 @@ void fishhook_bindings() {
         {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
         {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
         {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
-        // New
+        // New hooks
         {"SecTrustEvaluate", (void *)my_SecTrustEvaluate, (void **)&orig_SecTrustEvaluate},
         {"SecTrustCopyPublicKey", (void *)my_SecTrustCopyPublicKey, (void **)&orig_SecTrustCopyPublicKey},
         {"SecTrustGetCertificateAtIndex", (void *)my_SecTrustGetCertificateAtIndex, (void **)&orig_SecTrustGetCertificateAtIndex},
@@ -366,7 +364,7 @@ int is_cydia_installed() {
 
 int is_dyld_hijacked() { return (getenv("DYLD_INSERT_LIBRARIES") != NULL || getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL); }
 
-// ✅ الدالة المصححة نهائياً
+// ✅ Corrected debugger detection
 int is_debugger_attached() {
     int mib[4] = { CTL_KERN, KERN_PROC, KERN_PROC_PID, getpid() };
     struct kinfo_proc info;
