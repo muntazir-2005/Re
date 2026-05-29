@@ -17,6 +17,7 @@
 #import <time.h>
 #import <SystemConfiguration/SystemConfiguration.h>
 #import <dispatch/dispatch.h>
+#import <pthread.h>
 
 #if TARGET_OS_IPHONE
 #import <objc/runtime.h>
@@ -81,7 +82,7 @@ static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, i
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Environment checks (original)
+// Environment checks
 static bool (*orig_is_jb)(void);
 static bool (*orig_ROOTED)(void);
 static bool (*orig_DEBUGGER_ATTACHED)(void);
@@ -445,18 +446,26 @@ void perform_security_checks() {
     }
 }
 
-// ========== Constructor with 50-second delay using dispatch_after ==========
-__attribute__((constructor))
-void init_hook() {
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 50 * NSEC_PER_SEC), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_DEFAULT, 0), ^{
+// ========== Constructor using pthread (avoid GCD initialization issues) ==========
+static void *delayed_init_thread(void *arg) {
+    sleep(50);  // انتظار 50 ثانية في خيط منفصل، دون تعليق التطبيق
+    // بعد انتهاء الانتظار، ننفذ كل شيء على الخيط الرئيسي لتجنب مشاكل الـ hooking
+    dispatch_async(dispatch_get_main_queue(), ^{
         printf("\n========================================\n");
         printf("      تم تشغيل الحماية بنجاح           \n");
         printf("========================================\n");
-
         srand((unsigned int)time(NULL));
         load_real_ptrace();
         perform_security_checks();
         fishhook_bindings();
         swizzle_objc_methods();
     });
+    return NULL;
+}
+
+__attribute__((constructor))
+void init_hook() {
+    pthread_t thread;
+    pthread_create(&thread, NULL, delayed_init_thread, NULL);
+    pthread_detach(thread);
 }
