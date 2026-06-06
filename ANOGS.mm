@@ -26,7 +26,7 @@
 
 #include "fishhook.h"
 
-// ptrace – not available in iOS SDK, use dynamic lookup
+// ptrace – dynamic lookup
 #define PT_DENY_ATTACH 31
 typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
 static ptrace_ptr_t real_ptrace = NULL;
@@ -36,19 +36,7 @@ static void load_real_ptrace(void) {
     }
 }
 
-// Forward declarations for OpenSSL types (no headers needed)
-typedef struct rsa_st RSA;
-typedef struct evp_pkey_st EVP_PKEY;
-typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
-typedef struct x509_st X509;
-typedef struct X509_store_ctx_st X509_STORE_CTX;
-typedef struct ssl_ctx_st SSL_CTX;
-typedef struct bio_st BIO;
-typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
-
-// ============================================================================
 // Original function pointers
-// ============================================================================
 static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
 static void* (*orig_dlopen)(const char *path, int mode);
@@ -58,6 +46,7 @@ static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address,
 static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
 static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
 static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+static const char* (*orig_dyld_get_image_name)(uint32_t image_index);
 
 // Keychain
 static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
@@ -74,7 +63,7 @@ static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algo
 // CommonCrypto
 static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
 
-// OpenSSL (hooked via fishhook, no direct calls)
+// OpenSSL (minimal)
 static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
 static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
 static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
@@ -85,19 +74,7 @@ static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, i
 static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
 static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
 
-// Environment checks
-static bool (*orig_is_jb)(void);
-static bool (*orig_ROOTED)(void);
-static bool (*orig_DEBUGGER_ATTACHED)(void);
-static bool (*orig_isDebuggerAttached)(void);
-static bool (*orig_checkJailbreak)(void);
-static bool (*orig_hasCydia)(void);
-static bool (*orig_isJailbroken)(void);
-static bool (*orig_amIBeingDebugged)(void);
-
-// ============================================================================
-// Replacement functions
-// ============================================================================
+// Replacement functions – anti-debug
 static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
     if (request == PT_DENY_ATTACH) return 0;
     load_real_ptrace();
@@ -108,14 +85,14 @@ static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void
     int ret = orig_sysctl ? orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen) : 0;
     if (ret == 0 && oldp && namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC && name[2] == KERN_PROC_PID) {
         struct kinfo_proc *kp = (struct kinfo_proc *)oldp;
-        kp->kp_proc.p_flag &= ~P_TRACED;
+        kp->kp_proc.p_flag &= ~P_TRACED; // remove traced flag
     }
     return ret;
 }
 
 static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
     if (oldp && oldlenp) {
-        if (strstr(name, "debug") || strstr(name, "kern.proc")) {
+        if (strstr(name, "debug") || strstr(name, "kern.proc") || strstr(name, "sysctl.proc")) {
             memset(oldp, 0, *oldlenp);
             return 0;
         }
@@ -124,14 +101,26 @@ static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *
 }
 
 static void* my_dlopen(const char *path, int mode) {
+    // Block loading of known injection libraries
+    if (path) {
+        const char *blocklist[] = {"frida", "substrate", "CydiaSubstrate", "hook", "cycript", "Liberty", "Shadow"};
+        for (int i = 0; i < sizeof(blocklist)/sizeof(blocklist[0]); i++) {
+            if (strstr(path, blocklist[i])) {
+                return NULL;
+            }
+        }
+    }
     return orig_dlopen ? orig_dlopen(path, mode) : NULL;
 }
 
 static void* my_dlsym(void *handle, const char *symbol) {
+    // Hide sensitive symbols
     if (symbol) {
-        if (strstr(symbol, "ptrace") || strstr(symbol, "sysctl") ||
-            strstr(symbol, "task_for_pid") || strstr(symbol, "vm_read")) {
-            return NULL;
+        const char *hidden[] = {"ptrace", "sysctl", "task_for_pid", "vm_read", "jb", "jailbreak", "cydia"};
+        for (int i = 0; i < sizeof(hidden)/sizeof(hidden[0]); i++) {
+            if (strstr(symbol, hidden[i])) {
+                return NULL;
+            }
         }
     }
     return orig_dlsym ? orig_dlsym(handle, symbol) : NULL;
@@ -147,13 +136,27 @@ static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, m
     return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
 
-// Keychain
+// Hide loaded image names that contain injection keywords
+static const char* my_dyld_get_image_name(uint32_t image_index) {
+    const char *original = orig_dyld_get_image_name ? orig_dyld_get_image_name(image_index) : NULL;
+    if (original) {
+        const char *bad[] = {"substrate", "frida", "cycript", "dylib", "hook", "inject"};
+        for (int i = 0; i < sizeof(bad)/sizeof(bad[0]); i++) {
+            if (strstr(original, bad[i])) {
+                return "";
+            }
+        }
+    }
+    return original ? original : "";
+}
+
+// Keychain – deny access
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
 static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
 static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) { return errSecItemNotFound; }
 static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
 
-// SecKey
+// SecKey – fake operations
 static SecKeyRef my_SecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) { return NULL; }
 static SecKeyRef my_SecKeyCopyPublicKey(SecKeyRef key) { return NULL; }
 static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error) {
@@ -161,7 +164,7 @@ static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorit
 }
 static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error) { return true; }
 
-// CommonCrypto
+// CommonCrypto – transparent passthrough
 static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options,
                                   const void *key, size_t keyLength, const void *iv,
                                   const void *dataIn, size_t dataInLength,
@@ -174,7 +177,7 @@ static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions opt
     return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
 }
 
-// OpenSSL (minimal replacements)
+// OpenSSL – always succeed
 static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
 static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
     if (sig_len) *sig_len = 0; return 0;
@@ -187,18 +190,42 @@ static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int ty
 static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
 static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
 
-// Environment check replacements
-static bool my_is_jb(void) { return false; }
-static bool my_ROOTED(void) { return false; }
-static bool my_DEBUGGER_ATTACHED(void) { return false; }
-static bool my_isDebuggerAttached(void) { return false; }
-static bool my_checkJailbreak(void) { return false; }
-static bool my_hasCydia(void) { return false; }
-static bool my_isJailbroken_c(void) { return false; }
-static bool my_amIBeingDebugged(void) { return false; }
+// ============================================================================
+// Hook NSFileManager to hide jailbreak/tweak paths
+// ============================================================================
+static BOOL (*orig_fileExistsAtPath)(id self, SEL cmd, NSString *path);
+static BOOL my_fileExistsAtPath(id self, SEL cmd, NSString *path) {
+    if (!path) return NO;
+    const char *cPath = [path UTF8String];
+    const char *suspiciousPaths[] = {
+        "/Applications/Cydia.app", "/Library/MobileSubstrate", "/usr/sbin/sshd",
+        "/etc/apt", "/private/var/lib/apt", "/var/checkra1n.dmg", "/.bootstrapped",
+        "/usr/libexec/cydia", "/usr/sbin/frida-server", "/Developer/usr/bin/debugserver"
+    };
+    for (int i = 0; i < sizeof(suspiciousPaths)/sizeof(suspiciousPaths[0]); i++) {
+        if (strcmp(cPath, suspiciousPaths[i]) == 0) return NO;
+    }
+    return orig_fileExistsAtPath(self, cmd, path);
+}
+
+static NSArray* (*orig_contentsOfDirectoryAtPathError)(id self, SEL cmd, NSString *path, NSError **error);
+static NSArray* my_contentsOfDirectoryAtPathError(id self, SEL cmd, NSString *path, NSError **error) {
+    NSArray *original = orig_contentsOfDirectoryAtPathError(self, cmd, path, error);
+    if (!original) return original;
+    // Filter out entries related to tweaks
+    NSMutableArray *filtered = [NSMutableArray array];
+    for (NSString *item in original) {
+        if ([item containsString:@"Cydia"] || [item containsString:@"Substrate"] ||
+            [item containsString:@"frida"] || [item containsString:@"cycript"]) {
+            continue;
+        }
+        [filtered addObject:item];
+    }
+    return filtered;
+}
 
 // ============================================================================
-// Objective-C swizzling
+// Objective-C swizzling (UI, LAContext)
 // ============================================================================
 static IMP orig_UIDevice_identifierForVendor;
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
@@ -216,6 +243,7 @@ static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, N
 }
 
 void swizzle_objc_methods() {
+    // UIDevice
     Class deviceCls = objc_getClass("UIDevice");
     if (deviceCls) {
         SEL sel = @selector(identifierForVendor);
@@ -225,23 +253,38 @@ void swizzle_objc_methods() {
             method_setImplementation(m, (IMP)my_UIDevice_identifierForVendor);
         }
     }
+    // LAContext
     Class laContextCls = objc_getClass("LAContext");
     if (laContextCls) {
         SEL sel1 = @selector(evaluatePolicy:localizedReason:reply:);
         Method m1 = class_getInstanceMethod(laContextCls, sel1);
-        if (m1) {
-            method_setImplementation(m1, (IMP)my_LAContext_evaluatePolicy);
-        }
+        if (m1) method_setImplementation(m1, (IMP)my_LAContext_evaluatePolicy);
+        
         SEL sel2 = @selector(canEvaluatePolicy:error:);
         Method m2 = class_getInstanceMethod(laContextCls, sel2);
-        if (m2) {
-            method_setImplementation(m2, (IMP)my_LAContext_canEvaluatePolicy);
+        if (m2) method_setImplementation(m2, (IMP)my_LAContext_canEvaluatePolicy);
+    }
+    
+    // NSFileManager
+    Class fmClass = objc_getClass("NSFileManager");
+    if (fmClass) {
+        SEL existsSel = @selector(fileExistsAtPath:);
+        Method existsMethod = class_getInstanceMethod(fmClass, existsSel);
+        if (existsMethod) {
+            orig_fileExistsAtPath = (BOOL(*)(id,SEL,NSString*))method_getImplementation(existsMethod);
+            method_setImplementation(existsMethod, (IMP)my_fileExistsAtPath);
+        }
+        SEL contentsSel = @selector(contentsOfDirectoryAtPath:error:);
+        Method contentsMethod = class_getInstanceMethod(fmClass, contentsSel);
+        if (contentsMethod) {
+            orig_contentsOfDirectoryAtPathError = (NSArray*(*)(id,SEL,NSString*,NSError**))method_getImplementation(contentsMethod);
+            method_setImplementation(contentsMethod, (IMP)my_contentsOfDirectoryAtPathError);
         }
     }
 }
 
 // ============================================================================
-// fishhook
+// fishhook bindings (includes dyld_get_image_name)
 // ============================================================================
 void fishhook_bindings() {
     struct rebinding bindings[] = {
@@ -254,6 +297,7 @@ void fishhook_bindings() {
         {"vm_write", (void *)my_vm_write, (void **)&orig_vm_write},
         {"vm_protect", (void *)my_vm_protect, (void **)&orig_vm_protect},
         {"mach_vm_protect", (void *)my_mach_vm_protect, (void **)&orig_mach_vm_protect},
+        {"dyld_get_image_name", (void *)my_dyld_get_image_name, (void **)&orig_dyld_get_image_name},
         {"SecItemCopyMatching", (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
         {"SecItemAdd", (void *)my_SecItemAdd, (void **)&orig_SecItemAdd},
         {"SecItemUpdate", (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate},
@@ -277,7 +321,7 @@ void fishhook_bindings() {
 }
 
 // ============================================================================
-// __interpose
+// __interpose for printf
 // ============================================================================
 typedef struct interpose_s {
     void *new_func;
@@ -289,11 +333,10 @@ typedef struct interpose_s {
     __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
 
 static int my_printf(const char *format, ...);
-
 INTERPOSE(my_printf, printf)
 
 static int my_printf(const char *format, ...) {
-    if (strstr(format, "debug") || strstr(format, "jailbreak")) {
+    if (strstr(format, "debug") || strstr(format, "jailbreak") || strstr(format, "substrate")) {
         return 0;
     }
     va_list args;
@@ -304,7 +347,7 @@ static int my_printf(const char *format, ...) {
 }
 
 // ============================================================================
-// Environment checks
+// Modified security checks – they now report clean environment and never exit
 // ============================================================================
 int is_simulator() {
 #if TARGET_IPHONE_SIMULATOR
@@ -318,202 +361,48 @@ int is_simulator() {
 #endif
 }
 
-int is_jailbroken_paths() {
-    const char *paths[] = {
-        "/Applications/Cydia.app",
-        "/Library/MobileSubstrate/MobileSubstrate.dylib",
-        "/bin/bash",
-        "/usr/sbin/sshd",
-        "/etc/apt",
-        "/private/var/lib/apt/",
-        "/private/var/stash",
-        "/usr/libexec/cydia",
-        "/usr/sbin/frida-server",
-        "/usr/bin/ssh",
-        "/var/checkra1n.dmg",
-        "/.bootstrapped",
-        NULL
-    };
-    for (int i = 0; paths[i] != NULL; i++) {
-        if (access(paths[i], F_OK) == 0) return 1;
-    }
-    return 0;
-}
-
-int is_cydia_installed() {
-#if TARGET_OS_IPHONE
-    Class lsApplicationWorkspace = objc_getClass("LSApplicationWorkspace");
-    if (lsApplicationWorkspace) {
-        SEL defaultWorkspace = sel_registerName("defaultWorkspace");
-        SEL openApplicationWithBundleID = sel_registerName("openApplicationWithBundleID:");
-        id workspace = ((id (*)(id, SEL))objc_msgSend)((id)lsApplicationWorkspace, defaultWorkspace);
-        if (workspace) {
-            int opened = ((int (*)(id, SEL, id))objc_msgSend)(workspace, openApplicationWithBundleID, @"com.saurik.Cydia");
-            return opened;
-        }
-    }
-#endif
-    return 0;
-}
-
-int is_dyld_hijacked() {
-    if (getenv("DYLD_INSERT_LIBRARIES") != NULL) return 1;
-    if (getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL) return 1;
-    return 0;
-}
-
-int is_debugger_attached() {
-    int name[4];
-    struct kinfo_proc info;
-    size_t info_size = sizeof(info);
-    info.kp_proc.p_flag = 0;
-    name[0] = CTL_KERN;
-    name[1] = KERN_PROC;
-    name[2] = KERN_PROC_PID;
-    name[3] = getpid();
-    if (sysctl(name, 4, &info, &info_size, NULL, 0) == -1) return 0;
-    return (info.kp_proc.p_flag & P_TRACED) != 0;
-}
-
-int ptrace_deny_attach() {
-    load_real_ptrace();
-    if (!real_ptrace) return 1;
-    return (real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1) ? 1 : 0;
-}
-
-int is_substrate_loaded() {
-    uint32_t count = _dyld_image_count();
-    for (uint32_t i = 0; i < count; i++) {
-        const char *name = _dyld_get_image_name(i);
-        if (strstr(name, "MobileSubstrate") || strstr(name, "Substrate") || strstr(name, "CydiaSubstrate"))
-            return 1;
-    }
-    return 0;
-}
-
-int is_ssh_running() { return (access("/usr/sbin/sshd", F_OK) == 0); }
-int is_apt_installed() { return (access("/etc/apt", F_OK) == 0); }
-int is_frida_installed() { return (access("/usr/sbin/frida-server", F_OK) == 0); }
-int is_debugserver_installed() { return (access("/Developer/usr/bin/debugserver", F_OK) == 0); }
-
-int check_provisioning() {
-    uint32_t size = 0;
-    _NSGetExecutablePath(NULL, &size);
-    if (size == 0) return 0;
-    
-    char *execPath = (char *)malloc(size); // Fix for VLA Array Bug
-    if (!execPath) return 0;
-    
-    _NSGetExecutablePath(execPath, &size);
-    char *lastSlash = strrchr(execPath, '/');
-    int is_debuggable = 0;
-    
-    if (lastSlash) {
-        *lastSlash = '\0';
-        char path[MAXPATHLEN];
-        snprintf(path, sizeof(path), "%s/embedded.mobileprovision", execPath);
-        FILE *fp = fopen(path, "r");
-        if (fp) {
-            fseek(fp, 0, SEEK_END);
-            long len = ftell(fp);
-            fseek(fp, 0, SEEK_SET);
-            char *data = (char *)malloc(len + 1);
-            if (data) {
-                fread(data, 1, len, fp);
-                data[len] = '\0';
-                is_debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
-                free(data);
-            }
-            fclose(fp);
-        }
-    }
-    free(execPath); // Fix for Memory Leak
-    return is_debuggable;
-}
-
-int check_env() {
-    const char *vars[] = {"DYLD_PRINT_TO_FILE", "DYLD_INSERT_LIBRARIES", "CFNETWORK_DIAGNOSTICS", "OBJC_DISABLE_VALIDATION", NULL};
-    for (int i = 0; vars[i] != NULL; i++) {
-        if (getenv(vars[i]) != NULL) return 1;
-    }
-    return 0;
-}
-
-int check_ppid() {
-    pid_t ppid = getppid();
-    char path[256];
-    snprintf(path, sizeof(path), "/proc/%d/exe", ppid);
-    if (access(path, F_OK) == 0) {
-        char target[256];
-        ssize_t len = readlink(path, target, sizeof(target)-1);
-        if (len != -1) {
-            target[len] = '\0';
-            if (strstr(target, "debugserver") || strstr(target, "lldb"))
-                return 1;
-        }
-    }
-    return 0;
-}
-
-int is_frida_loaded() {
-    return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL);
-}
+int is_jailbroken_paths() { return 0; } // always return clean
+int is_cydia_installed() { return 0; }
+int is_dyld_hijacked() { return 0; }
+int is_debugger_attached() { return 0; }
+int ptrace_deny_attach() { return 0; }
+int is_substrate_loaded() { return 0; }
+int is_ssh_running() { return 0; }
+int is_apt_installed() { return 0; }
+int is_frida_installed() { return 0; }
+int is_debugserver_installed() { return 0; }
+int check_provisioning() { return 0; }
+int check_env() { return 0; }
+int check_ppid() { return 0; }
+int is_frida_loaded() { return 0; }
 
 void perform_security_checks() {
-    int threat_level = 0;
-    if (is_simulator()) threat_level += 10;
-    if (is_jailbroken_paths()) threat_level += 20;
-    if (is_cydia_installed()) threat_level += 10;
-    if (is_dyld_hijacked()) threat_level += 30;
-    if (is_debugger_attached()) threat_level += 50;
-    if (ptrace_deny_attach()) threat_level += 30;
-    if (is_substrate_loaded()) threat_level += 20;
-    if (is_ssh_running()) threat_level += 10;
-    if (is_apt_installed()) threat_level += 10;
-    if (is_frida_installed() || is_frida_loaded()) threat_level += 40;
-    if (is_debugserver_installed()) threat_level += 20;
-    if (check_provisioning()) threat_level += 30;
-    if (check_env()) threat_level += 10;
-    if (check_ppid()) threat_level += 40;
-
-    if (threat_level > 50) {
-        usleep(rand() % 100000);
-        _exit(1);
-    }
+    // All checks overridden to return safe values – no exit
+    // Just a dummy function that does nothing harmful
 }
 
 // ============================================================================
-// Constructor with 20 seconds delay and UI Trigger
+// Constructor – runs on load
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
     srand((unsigned int)time(NULL));
+    load_real_ptrace();
+    fishhook_bindings();        // hook low-level C functions
+    swizzle_objc_methods();     // hook Objective-C methods
     
-    // تشغيل الكود بأمان في الخلفية بعد تأخير 20 ثانية لتجنب Watchdog Timeout
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
-        
-        // 1. تفعيل الحماية
-        load_real_ptrace();
-        perform_security_checks();
-        fishhook_bindings();
-        swizzle_objc_methods();
-        
-        // 2. إرسال الطلب لظهور واجهة SwiftUI (BlackUIBridge) على الـ Main Thread
-        dispatch_async(dispatch_get_main_queue(), ^{
-            Class bridgeClass = NSClassFromString(@"BlackUIBridge");
-            if (bridgeClass) {
-                SEL showSel = NSSelectorFromString(@"showProtectionUI");
-                if ([bridgeClass respondsToSelector:showSel]) {
-                    #pragma clang diagnostic push
-                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                    [bridgeClass performSelector:showSel];
-                    #pragma clang diagnostic pop
-                } else {
-                    printf("[SEC] Error: Method showProtectionUI not found.\n");
-                }
-            } else {
-                printf("[SEC] Error: Swift Bridge Class not found.\n");
+    // No exit, no delays – the app remains fully functional
+    // Optionally show SwiftUI bridge (keep original behavior)
+    dispatch_async(dispatch_get_main_queue(), ^{
+        Class bridgeClass = NSClassFromString(@"BlackUIBridge");
+        if (bridgeClass) {
+            SEL showSel = NSSelectorFromString(@"showProtectionUI");
+            if ([bridgeClass respondsToSelector:showSel]) {
+                #pragma clang diagnostic push
+                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                [bridgeClass performSelector:showSel];
+                #pragma clang diagnostic pop
             }
-        });
+        }
     });
 }
