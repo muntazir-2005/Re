@@ -1,573 +1,519 @@
-// =============== نظام تعطيل فحص التطبيقات الخارجية والطرفية ===============
-// إصدار مصحح بالكامل لـ iOS 18.5 – خالٍ من أي كراش
-
-#import <Foundation/Foundation.h>
-#import <dlfcn.h>
-#import <mach-o/dyld.h>
+#import <stdio.h>
+#import <string.h>
+#import <unistd.h>
+#import <stdlib.h>
 #import <sys/stat.h>
 #import <sys/sysctl.h>
-#import <objc/runtime.h>
+#import <sys/utsname.h>
+#import <dlfcn.h>
 #import <mach/mach.h>
-#import <spawn.h>
-#import <sys/socket.h>
-#import <netinet/in.h>
-#import <arpa/inet.h>
-#import <pthread.h>
+#import <mach-o/dyld.h>
+#import <TargetConditionals.h>
+#import <sys/param.h>
+#import <sys/mount.h>
+#import <CommonCrypto/CommonCryptor.h>
+#import <Security/Security.h>
+#import <Security/SecKey.h>
+#import <time.h>
+#import <Foundation/Foundation.h>
 
-// ================================================
-// 🚫 1. نظام كشف وإخفاء التطبيقات الخارجية
-// ================================================
+#if TARGET_OS_IPHONE
+#import <objc/runtime.h>
+#import <objc/message.h>
+#import <LocalAuthentication/LocalAuthentication.h>
+#import <UIKit/UIKit.h>
+#endif
 
-@interface ExternalAppDetector : NSObject
-@property (strong, nonatomic) NSArray *forbiddenAppIdentifiers;
-@property (strong, nonatomic) NSArray *forbiddenProcessNames;
-@property (strong, nonatomic) NSArray *forbiddenLibraryNames;
-- (BOOL)isExternalAppRunning:(NSString *)appIdentifier;
-- (BOOL)isTerminalAppInstalled;
-- (BOOL)isDebuggingToolPresent;
-- (void)hideExternalApps;
-- (void)spoofProcessList;
-- (void)modifyAppRegistry;
-@end
+#include "fishhook.h"
 
-@implementation ExternalAppDetector
-
-- (instancetype)init {
-    self = [super init];
-    if (self) {
-        self.forbiddenAppIdentifiers = @[
-            @"com.apple.Terminal", @"com.googlecode.iterm2", @"com.sublimetext.3",
-            @"com.microsoft.VSCode", @"org.gnu.Emacs", @"org.vim.MacVim",
-            @"com.hexrays.ida", @"com.hopperapp.hopper", @"com.ollydbg.OllyDbg",
-            @"org.wireshark.Wireshark", @"com.charles.Charles", @"com.burpsuite.BurpSuite",
-            @"com.frida.Frida", @"com.cydiasubstrate.Substrate", @"com.electra.electra"
-        ];
-        self.forbiddenProcessNames = @[
-            @"Terminal", @"iTerm", @"zsh", @"bash", @"ssh", @"telnet",
-            @"gdb", @"lldb", @"dtrace", @"frida", @"cycript", @"Clutch"
-        ];
-        self.forbiddenLibraryNames = @[
-            @"libfrida", @"libsubstrate", @"libcycript", @"libhooker"
-        ];
+// ptrace – not available in iOS SDK, use dynamic lookup
+#define PT_DENY_ATTACH 31
+typedef int (*ptrace_ptr_t)(int, pid_t, caddr_t, int);
+static ptrace_ptr_t real_ptrace = NULL;
+static void load_real_ptrace(void) {
+    if (!real_ptrace) {
+        real_ptrace = (ptrace_ptr_t)dlsym(RTLD_DEFAULT, "ptrace");
     }
-    return self;
 }
 
-- (BOOL)isExternalAppRunning:(NSString *)appIdentifier {
-    int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
-    size_t size;
-    if (sysctl(mib, 4, NULL, &size, NULL, 0) < 0) return NO;
-    struct kinfo_proc *procs = (struct kinfo_proc *)malloc(size);
-    if (!procs) return NO;
-    if (sysctl(mib, 4, procs, &size, NULL, 0) < 0) {
-        free(procs);
-        return NO;
+// Forward declarations for OpenSSL types (no headers needed)
+typedef struct rsa_st RSA;
+typedef struct evp_pkey_st EVP_PKEY;
+typedef struct evp_pkey_ctx_st EVP_PKEY_CTX;
+typedef struct x509_st X509;
+typedef struct X509_store_ctx_st X509_STORE_CTX;
+typedef struct ssl_ctx_st SSL_CTX;
+typedef struct bio_st BIO;
+typedef int pem_password_cb(char *buf, int size, int rwflag, void *userdata);
+
+// ============================================================================
+// Original function pointers
+// ============================================================================
+static int (*orig_sysctl)(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+static int (*orig_sysctlbyname)(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen);
+static void* (*orig_dlopen)(const char *path, int mode);
+static void* (*orig_dlsym)(void *handle, const char *symbol);
+static int (*orig_task_for_pid)(mach_port_t target_tport, int pid, mach_port_t *tn);
+static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize);
+static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
+static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+
+// Keychain
+static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
+static OSStatus (*orig_SecItemAdd)(CFDictionaryRef attributes, CFTypeRef *result);
+static OSStatus (*orig_SecItemUpdate)(CFDictionaryRef query, CFDictionaryRef attributesToUpdate);
+static OSStatus (*orig_SecItemDelete)(CFDictionaryRef query);
+
+// SecKey
+static SecKeyRef (*orig_SecKeyCreateRandomKey)(CFDictionaryRef parameters, CFErrorRef *error);
+static SecKeyRef (*orig_SecKeyCopyPublicKey)(SecKeyRef key);
+static CFDataRef (*orig_SecKeyCreateSignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error);
+static Boolean (*orig_SecKeyVerifySignature)(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error);
+
+// CommonCrypto
+static CCCryptorStatus (*orig_CCCrypt)(CCOperation op, CCAlgorithm alg, CCOptions options, const void *key, size_t keyLength, const void *iv, const void *dataIn, size_t dataInLength, void *dataOut, size_t dataOutAvailable, size_t *dataOutMoved);
+
+// OpenSSL (hooked via fishhook, no direct calls)
+static int (*orig_RSA_verify)(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa);
+static int (*orig_RSA_sign)(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa);
+static int (*orig_EVP_PKEY_verify)(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len);
+static int (*orig_X509_verify_cert)(X509_STORE_CTX *ctx);
+static int (*orig_X509_check_private_key)(X509 *x509, EVP_PKEY *pkey);
+static EVP_PKEY* (*orig_PEM_read_bio_PrivateKey)(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u);
+static int (*orig_SSL_CTX_use_PrivateKey_file)(SSL_CTX *ctx, const char *file, int type);
+static int (*orig_SSL_CTX_check_private_key)(SSL_CTX *ctx);
+static int (*orig_SSL_CTX_load_verify_locations)(SSL_CTX *ctx, const char *CAfile, const char *CApath);
+
+// Environment checks
+static bool (*orig_is_jb)(void);
+static bool (*orig_ROOTED)(void);
+static bool (*orig_DEBUGGER_ATTACHED)(void);
+static bool (*orig_isDebuggerAttached)(void);
+static bool (*orig_checkJailbreak)(void);
+static bool (*orig_hasCydia)(void);
+static bool (*orig_isJailbroken)(void);
+static bool (*orig_amIBeingDebugged)(void);
+
+// ============================================================================
+// Replacement functions
+// ============================================================================
+static int my_ptrace(int request, pid_t pid, caddr_t addr, int data) {
+    if (request == PT_DENY_ATTACH) return 0;
+    load_real_ptrace();
+    return real_ptrace ? real_ptrace(request, pid, addr, data) : 0;
+}
+
+static int my_sysctl(int *name, u_int namelen, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    int ret = orig_sysctl ? orig_sysctl(name, namelen, oldp, oldlenp, newp, newlen) : 0;
+    if (ret == 0 && oldp && namelen == 4 && name[0] == CTL_KERN && name[1] == KERN_PROC && name[2] == KERN_PROC_PID) {
+        struct kinfo_proc *kp = (struct kinfo_proc *)oldp;
+        kp->kp_proc.p_flag &= ~P_TRACED;
     }
-    int count = (int)(size / sizeof(struct kinfo_proc));
-    BOOL found = NO;
-    for (int i = 0; i < count; i++) {
-        NSString *procName = [NSString stringWithUTF8String:procs[i].kp_proc.p_comm];
-        if ([procName rangeOfString:appIdentifier options:NSCaseInsensitiveSearch].location != NSNotFound) {
-            found = YES;
-            break;
+    return ret;
+}
+
+static int my_sysctlbyname(const char *name, void *oldp, size_t *oldlenp, void *newp, size_t newlen) {
+    if (oldp && oldlenp) {
+        if (strstr(name, "debug") || strstr(name, "kern.proc")) {
+            memset(oldp, 0, *oldlenp);
+            return 0;
         }
     }
-    free(procs);
-    return found;
+    return orig_sysctlbyname ? orig_sysctlbyname(name, oldp, oldlenp, newp, newlen) : 0;
 }
 
-- (BOOL)isTerminalAppInstalled {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    return [fm fileExistsAtPath:@"/Applications/Utilities/Terminal.app"] ||
-           [fm fileExistsAtPath:@"/Applications/Terminal.app"];
+static void* my_dlopen(const char *path, int mode) {
+    return orig_dlopen ? orig_dlopen(path, mode) : NULL;
 }
 
-- (BOOL)isDebuggingToolPresent {
-    NSFileManager *fm = [NSFileManager defaultManager];
-    return [fm fileExistsAtPath:@"/usr/bin/gdb"] ||
-           [fm fileExistsAtPath:@"/usr/bin/lldb"];
-}
-
-- (void)hideExternalApps {
-    [self swizzleWorkspaceMethods];
-    [self patchProcessList];
-    [self hideFromLaunchServices];
-}
-
-- (void)swizzleWorkspaceMethods {
-    NSLog(@"[BYTEPASS] تم استدعاء swizzleWorkspaceMethods (محاكاة)");
-}
-
-- (void)patchProcessList {
-    NSLog(@"[BYTEPASS] تم استدعاء patchProcessList (محاكاة)");
-}
-
-- (void)hideFromLaunchServices {
-    NSLog(@"[BYTEPASS] تم استدعاء hideFromLaunchServices (محاكاة)");
-}
-
-- (void)spoofProcessList {
-    NSLog(@"[BYTEPASS] تم استدعاء spoofProcessList");
-}
-
-- (void)modifyAppRegistry {
-    NSLog(@"[BYTEPASS] تم استدعاء modifyAppRegistry");
-}
-
-@end
-
-// ================================================
-// 🔧 2. نظام تعديل تسجيلات النظام
-// ================================================
-
-@interface SystemRegistryModifier : NSObject
-- (void)removeAppFromLaunchServices:(NSString *)bundleID;
-- (void)spoofAppRegistryEntry:(NSString *)bundleID;
-- (BOOL)isAppHiddenFromSystem:(NSString *)bundleID;
-- (void)filterSystemLogs;
-- (void)removeAppTracesFromLogs:(NSString *)bundleID;
-- (void)disableFSEventsForApp:(NSString *)appPath;
-- (void)clearFSEventsDatabase;
-@end
-
-@implementation SystemRegistryModifier
-- (void)removeAppFromLaunchServices:(NSString *)bundleID { NSLog(@"[BYTEPASS] إلغاء تسجيل %@", bundleID); }
-- (void)spoofAppRegistryEntry:(NSString *)bundleID { NSLog(@"[BYTEPASS] تزوير %@", bundleID); }
-- (BOOL)isAppHiddenFromSystem:(NSString *)bundleID { return NO; }
-- (void)filterSystemLogs { NSLog(@"[BYTEPASS] تم فلترة السجلات"); }
-- (void)removeAppTracesFromLogs:(NSString *)bundleID { NSLog(@"[BYTEPASS] إزالة آثار %@", bundleID); }
-- (void)disableFSEventsForApp:(NSString *)appPath { NSLog(@"[BYTEPASS] تعطيل FSEvents لـ %@", appPath); }
-- (void)clearFSEventsDatabase { NSLog(@"[BYTEPASS] مسح FSEvents"); }
-@end
-
-// ================================================
-// 🛡️ 3. نظام حماية العمليات
-// ================================================
-
-@interface ProcessProtector : NSObject
-- (void)hideProcessFromTaskList;
-- (void)spoofProcessName:(const char *)newName;
-- (void)randomizeProcessID;
-- (void)protectProcessMemory;
-- (void)encryptProcessSegments;
-- (void)implementASLR;
-- (BOOL)isProcessBeingTraced;
-- (void)antiDebug;
-- (void)antiAttach;
-@end
-
-@implementation ProcessProtector
-- (void)hideProcessFromTaskList {
-    [self manipulateKernelProcessList];
-    [self patchSysctlHandlers];
-    [self hideFromProcFS];
-}
-- (void)manipulateKernelProcessList { NSLog(@"[BYTEPASS] manipulateKernelProcessList"); }
-- (void)patchSysctlHandlers { NSLog(@"[BYTEPASS] patchSysctlHandlers"); }
-- (void)hideFromProcFS { NSLog(@"[BYTEPASS] hideFromProcFS"); }
-- (void)spoofProcessName:(const char *)newName { NSLog(@"[BYTEPASS] تزوير الاسم إلى %s", newName); }
-- (void)randomizeProcessID { NSLog(@"[BYTEPASS] randomizeProcessID (محاكاة)"); }
-- (void)protectProcessMemory { NSLog(@"[BYTEPASS] protectProcessMemory"); }
-- (void)encryptProcessSegments { NSLog(@"[BYTEPASS] encryptProcessSegments"); }
-- (void)implementASLR { NSLog(@"[BYTEPASS] implementASLR"); }
-- (BOOL)isProcessBeingTraced { return NO; }
-- (void)antiDebug {
-    [self checkPTRACE];
-    [self checkSysctl];
-    [self checkExceptionPorts];
-}
-- (void)checkPTRACE { NSLog(@"[BYTEPASS] تعطيل التصحيح"); }
-- (void)checkSysctl { NSLog(@"[BYTEPASS] checkSysctl"); }
-- (void)checkExceptionPorts { NSLog(@"[BYTEPASS] checkExceptionPorts"); }
-- (void)antiAttach { NSLog(@"[BYTEPASS] antiAttach"); }
-@end
-
-// ================================================
-// 📡 4. نظام اعتراض الاتصالات (لـ iOS)
-// ================================================
-
-@interface CommunicationInterceptor : NSObject
-- (void)interceptNotifications;
-- (void)filterNSNotifications;
-- (void)interceptMachPorts;
-- (void)spoofMachMessages;
-- (void)interceptXPCConnections;
-- (void)spoofXPCResponses;
-@end
-
-@implementation CommunicationInterceptor
-- (void)interceptNotifications {
-    [[NSNotificationCenter defaultCenter] addObserver:self
-                                             selector:@selector(handleNotification:)
-                                                 name:nil
-                                               object:nil];
-}
-- (void)handleNotification:(NSNotification *)notification {
-    NSString *name = notification.name;
-    NSArray *securityNotifications = @[
-        @"com.apple.security.assessment",
-        @"com.apple.security.scan",
-        @"com.game.anticheat.scan"
-    ];
-    if ([securityNotifications containsObject:name]) {
-        NSLog(@"[BYTEPASS] 🛡️ تم اعتراض إشعار فحص أمني: %@", name);
-        // منع الإشعار
+static void* my_dlsym(void *handle, const char *symbol) {
+    if (symbol) {
+        if (strstr(symbol, "ptrace") || strstr(symbol, "sysctl") ||
+            strstr(symbol, "task_for_pid") || strstr(symbol, "vm_read")) {
+            return NULL;
+        }
     }
+    return orig_dlsym ? orig_dlsym(handle, symbol) : NULL;
 }
-- (void)filterNSNotifications { NSLog(@"[BYTEPASS] filterNSNotifications"); }
-- (void)interceptMachPorts { NSLog(@"[BYTEPASS] interceptMachPorts"); }
-- (void)spoofMachMessages { NSLog(@"[BYTEPASS] spoofMachMessages"); }
-- (void)interceptXPCConnections { NSLog(@"[BYTEPASS] interceptXPCConnections"); }
-- (void)spoofXPCResponses { NSLog(@"[BYTEPASS] spoofXPCResponses"); }
-@end
 
-// ================================================
-// 🔍 5. نظام فحص النظام المخفي
-// ================================================
-
-@interface StealthSystemScanner : NSObject
-- (NSDictionary *)stealthySystemScan;
-- (BOOL)detectHiddenApps;
-- (NSArray *)findConcealedComponents;
-- (NSDictionary *)hiddenMemoryAnalysis;
-- (BOOL)scanForInjectedCode;
-- (void)monitorHiddenNetworkActivity;
-@end
-
-@implementation StealthSystemScanner
-- (NSDictionary *)stealthySystemScan {
-    NSMutableDictionary *results = [NSMutableDictionary new];
-    results[@"memory"] = [self hiddenMemoryScan];
-    results[@"filesystem"] = [self hiddenFilesystemScan];
-    results[@"network"] = [self hiddenNetworkScan];
-    results[@"processes"] = [self hiddenProcessScan];
-    NSData *encrypted = [self encryptScanResults:results];
-    return @{@"scan": encrypted, @"timestamp": [NSDate date], @"signature": [self generateScanSignature]};
+static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn) { return KERN_FAILURE; }
+static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize) { return KERN_FAILURE; }
+static int my_vm_write(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt) { return KERN_FAILURE; }
+static int my_vm_protect(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection) {
+    return orig_vm_protect ? orig_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
 }
-- (NSDictionary *)hiddenMemoryScan { return @{@"suspicious_regions": @[]}; }
-- (NSDictionary *)hiddenFilesystemScan { return @{}; }
-- (NSDictionary *)hiddenNetworkScan { return @{}; }
-- (NSDictionary *)hiddenProcessScan { return @{}; }
-- (NSData *)encryptScanResults:(NSDictionary *)results {
-    NSError *error = nil;
-    NSData *data = [NSKeyedArchiver archivedDataWithRootObject:results requiringSecureCoding:NO error:&error];
-    if (error) {
-        NSLog(@"[BYTEPASS] خطأ في تشفير نتائج الفحص: %@", error);
+static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection) {
+    return orig_mach_vm_protect ? orig_mach_vm_protect(target_task, address, size, set_max, new_protection) : KERN_SUCCESS;
+}
+
+// Keychain
+static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
+static OSStatus my_SecItemAdd(CFDictionaryRef attributes, CFTypeRef *result) { return errSecDuplicateItem; }
+static OSStatus my_SecItemUpdate(CFDictionaryRef query, CFDictionaryRef attributesToUpdate) { return errSecItemNotFound; }
+static OSStatus my_SecItemDelete(CFDictionaryRef query) { return errSecSuccess; }
+
+// SecKey
+static SecKeyRef my_SecKeyCreateRandomKey(CFDictionaryRef parameters, CFErrorRef *error) { return NULL; }
+static SecKeyRef my_SecKeyCopyPublicKey(SecKeyRef key) { return NULL; }
+static CFDataRef my_SecKeyCreateSignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFErrorRef *error) {
+    return CFDataCreate(NULL, (const UInt8*)"fake_signature", 14);
+}
+static Boolean my_SecKeyVerifySignature(SecKeyRef key, SecKeyAlgorithm algorithm, CFDataRef dataToSign, CFDataRef signature, CFErrorRef *error) { return true; }
+
+// CommonCrypto
+static CCCryptorStatus my_CCCrypt(CCOperation op, CCAlgorithm alg, CCOptions options,
+                                  const void *key, size_t keyLength, const void *iv,
+                                  const void *dataIn, size_t dataInLength,
+                                  void *dataOut, size_t dataOutAvailable,
+                                  size_t *dataOutMoved) {
+    if (!dataOut || !dataOutMoved) return kCCParamError;
+    size_t bytes = (dataInLength < dataOutAvailable) ? dataInLength : dataOutAvailable;
+    memcpy(dataOut, dataIn, bytes);
+    *dataOutMoved = bytes;
+    return (bytes == dataInLength) ? kCCSuccess : kCCBufferTooSmall;
+}
+
+// OpenSSL (minimal replacements)
+static int my_RSA_verify(int type, const unsigned char *m, unsigned int m_len, const unsigned char *sig, unsigned int sig_len, RSA *rsa) { return 1; }
+static int my_RSA_sign(int type, const unsigned char *m, unsigned int m_len, unsigned char *sig, unsigned int *sig_len, RSA *rsa) {
+    if (sig_len) *sig_len = 0; return 0;
+}
+static int my_EVP_PKEY_verify(EVP_PKEY_CTX *ctx, const unsigned char *sig, size_t sig_len, const unsigned char *tbs, size_t tbs_len) { return 1; }
+static int my_X509_verify_cert(X509_STORE_CTX *ctx) { return 1; }
+static int my_X509_check_private_key(X509 *x509, EVP_PKEY *pkey) { return 1; }
+static EVP_PKEY* my_PEM_read_bio_PrivateKey(BIO *bp, EVP_PKEY **x, pem_password_cb *cb, void *u) { return NULL; }
+static int my_SSL_CTX_use_PrivateKey_file(SSL_CTX *ctx, const char *file, int type) { return 1; }
+static int my_SSL_CTX_check_private_key(SSL_CTX *ctx) { return 1; }
+static int my_SSL_CTX_load_verify_locations(SSL_CTX *ctx, const char *CAfile, const char *CApath) { return 1; }
+
+// Environment check replacements
+static bool my_is_jb(void) { return false; }
+static bool my_ROOTED(void) { return false; }
+static bool my_DEBUGGER_ATTACHED(void) { return false; }
+static bool my_isDebuggerAttached(void) { return false; }
+static bool my_checkJailbreak(void) { return false; }
+static bool my_hasCydia(void) { return false; }
+static bool my_isJailbroken_c(void) { return false; }
+static bool my_amIBeingDebugged(void) { return false; }
+
+// ============================================================================
+// Objective-C swizzling
+// ============================================================================
+static IMP orig_UIDevice_identifierForVendor;
+static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
+    return [[NSUUID alloc] initWithUUIDString:@"00000000-0000-0000-0000-000000000000"];
+}
+
+static void my_LAContext_evaluatePolicy(id self, SEL _cmd, LAPolicy policy,
+                                        NSString *localizedReason,
+                                        void(^reply)(BOOL success, NSError *error)) {
+    if (reply) reply(YES, nil);
+}
+
+static BOOL my_LAContext_canEvaluatePolicy(id self, SEL _cmd, LAPolicy policy, NSError **error) {
+    return YES;
+}
+
+void swizzle_objc_methods() {
+    Class deviceCls = objc_getClass("UIDevice");
+    if (deviceCls) {
+        SEL sel = @selector(identifierForVendor);
+        Method m = class_getInstanceMethod(deviceCls, sel);
+        if (m) {
+            orig_UIDevice_identifierForVendor = method_getImplementation(m);
+            method_setImplementation(m, (IMP)my_UIDevice_identifierForVendor);
+        }
     }
-    return data;
-}
-- (NSString *)generateScanSignature { return [[NSUUID UUID] UUIDString]; }
-- (BOOL)detectHiddenApps { return NO; }
-- (NSArray *)findConcealedComponents { return @[]; }
-- (NSDictionary *)hiddenMemoryAnalysis { return @{}; }
-- (BOOL)scanForInjectedCode { return NO; }
-- (void)monitorHiddenNetworkActivity { }
-@end
-
-// ================================================
-// 🎭 6. نظام التمويه والمحاكاة (مصحح بالكامل)
-// ================================================
-
-// --- Category آمن على NSProcessInfo لاستخدامه في التمويه ---
-@interface NSProcessInfo (Bypass)
-- (NSOperatingSystemVersion)bypass_operatingSystemVersion;
-@end
-
-@implementation NSProcessInfo (Bypass)
-- (NSOperatingSystemVersion)bypass_operatingSystemVersion {
-    NSOperatingSystemVersion fakeVersion;
-    fakeVersion.majorVersion = 15;
-    fakeVersion.minorVersion = 0;
-    fakeVersion.patchVersion = 0;
-    return fakeVersion;
-}
-@end
-
-@interface SystemSpoofer : NSObject
-- (void)spoofSystemProperties;
-- (void)fakeEnvironmentVariables;
-- (void)modifySystemCalls;
-- (void)simulateNormalBehavior;
-- (void)generateLegitimateTraffic;
-- (void)createFakeSystemLogs;
-- (void)forgeSystemIdentity;
-- (void)spoofHardwareInfo;
-- (void)fakeNetworkIdentity;
-@end
-
-@implementation SystemSpoofer
-
-- (void)spoofSystemProperties {
-    [self setSystemVersion];   // تم التصحيح
-    [self setMachineModel:@"iPhone14,3"];
-    [self setHardwareUUID:[NSUUID UUID].UUIDString];
-}
-
-// ✅ التصحيح الكامل: استبدال imp_implementationWithBlock بـ Method Swizzling آمن
-- (void)setSystemVersion {
-    Class processInfoClass = [NSProcessInfo class];
-    SEL originalSEL = @selector(operatingSystemVersion);
-    SEL fakeSEL = @selector(bypass_operatingSystemVersion);
-
-    Method originalMethod = class_getInstanceMethod(processInfoClass, originalSEL);
-    Method fakeMethod = class_getInstanceMethod(processInfoClass, fakeSEL);
-
-    if (originalMethod && fakeMethod) {
-        method_exchangeImplementations(originalMethod, fakeMethod);
-        NSLog(@"[BYTEPASS] تم إخفاء إصدار النظام (Swizzling آمن)");
-    } else {
-        NSLog(@"[BYTEPASS] فشل العثور على الدوال المطلوبة للتمويه");
+    Class laContextCls = objc_getClass("LAContext");
+    if (laContextCls) {
+        SEL sel1 = @selector(evaluatePolicy:localizedReason:reply:);
+        Method m1 = class_getInstanceMethod(laContextCls, sel1);
+        if (m1) {
+            method_setImplementation(m1, (IMP)my_LAContext_evaluatePolicy);
+        }
+        SEL sel2 = @selector(canEvaluatePolicy:error:);
+        Method m2 = class_getInstanceMethod(laContextCls, sel2);
+        if (m2) {
+            method_setImplementation(m2, (IMP)my_LAContext_canEvaluatePolicy);
+        }
     }
 }
 
-- (void)setMachineModel:(NSString *)model {
-    // يمكن استخدام uname أو sysctl للتغيير، لكن هنا للتمثيل فقط
-    NSLog(@"[BYTEPASS] تعيين موديل الجهاز إلى %@", model);
+// ============================================================================
+// fishhook
+// ============================================================================
+void fishhook_bindings() {
+    struct rebinding bindings[] = {
+        {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
+        {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
+        {"dlopen", (void *)my_dlopen, (void **)&orig_dlopen},
+        {"dlsym", (void *)my_dlsym, (void **)&orig_dlsym},
+        {"task_for_pid", (void *)my_task_for_pid, (void **)&orig_task_for_pid},
+        {"vm_read_overwrite", (void *)my_vm_read_overwrite, (void **)&orig_vm_read_overwrite},
+        {"vm_write", (void *)my_vm_write, (void **)&orig_vm_write},
+        {"vm_protect", (void *)my_vm_protect, (void **)&orig_vm_protect},
+        {"mach_vm_protect", (void *)my_mach_vm_protect, (void **)&orig_mach_vm_protect},
+        {"SecItemCopyMatching", (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
+        {"SecItemAdd", (void *)my_SecItemAdd, (void **)&orig_SecItemAdd},
+        {"SecItemUpdate", (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate},
+        {"SecItemDelete", (void *)my_SecItemDelete, (void **)&orig_SecItemDelete},
+        {"SecKeyCreateRandomKey", (void *)my_SecKeyCreateRandomKey, (void **)&orig_SecKeyCreateRandomKey},
+        {"SecKeyCopyPublicKey", (void *)my_SecKeyCopyPublicKey, (void **)&orig_SecKeyCopyPublicKey},
+        {"SecKeyCreateSignature", (void *)my_SecKeyCreateSignature, (void **)&orig_SecKeyCreateSignature},
+        {"SecKeyVerifySignature", (void *)my_SecKeyVerifySignature, (void **)&orig_SecKeyVerifySignature},
+        {"CCCrypt", (void *)my_CCCrypt, (void **)&orig_CCCrypt},
+        {"RSA_verify", (void *)my_RSA_verify, (void **)&orig_RSA_verify},
+        {"RSA_sign", (void *)my_RSA_sign, (void **)&orig_RSA_sign},
+        {"EVP_PKEY_verify", (void *)my_EVP_PKEY_verify, (void **)&orig_EVP_PKEY_verify},
+        {"X509_verify_cert", (void *)my_X509_verify_cert, (void **)&orig_X509_verify_cert},
+        {"X509_check_private_key", (void *)my_X509_check_private_key, (void **)&orig_X509_check_private_key},
+        {"PEM_read_bio_PrivateKey", (void *)my_PEM_read_bio_PrivateKey, (void **)&orig_PEM_read_bio_PrivateKey},
+        {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
+        {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
+        {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
+    };
+    rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
 }
 
-- (void)setHardwareUUID:(NSString *)uuid {
-    NSLog(@"[BYTEPASS] تعيين UUID مزيف: %@", uuid);
+// ============================================================================
+// __interpose
+// ============================================================================
+typedef struct interpose_s {
+    void *new_func;
+    void *orig_func;
+} interpose_t;
+
+#define INTERPOSE(new, orig) \
+    __attribute__((used)) static const interpose_t interpose_##new \
+    __attribute__((section("__DATA,__interpose"))) = { (void *)new, (void *)orig };
+
+static int my_printf(const char *format, ...);
+
+INTERPOSE(my_printf, printf)
+
+static int my_printf(const char *format, ...) {
+    if (strstr(format, "debug") || strstr(format, "jailbreak")) {
+        return 0;
+    }
+    va_list args;
+    va_start(args, format);
+    int ret = vprintf(format, args);
+    va_end(args);
+    return ret;
 }
 
-- (void)fakeEnvironmentVariables {
-    // إلغاء متغيرات البيئة المشبوهة
-    setenv("DYLD_INSERT_LIBRARIES", "", 1);
-    setenv("DYLD_FORCE_FLAT_NAMESPACE", "", 1);
-    NSLog(@"[BYTEPASS] تم تنظيف متغيرات البيئة");
+// ============================================================================
+// Environment checks
+// ============================================================================
+int is_simulator() {
+#if TARGET_IPHONE_SIMULATOR
+    return 1;
+#else
+    struct utsname systemInfo;
+    uname(&systemInfo);
+    if (strcmp(systemInfo.machine, "x86_64") == 0 || strcmp(systemInfo.machine, "i386") == 0)
+        return 1;
+    return 0;
+#endif
 }
 
-- (void)modifySystemCalls { NSLog(@"[BYTEPASS] modifySystemCalls"); }
-- (void)simulateNormalBehavior { NSLog(@"[BYTEPASS] simulateNormalBehavior"); }
-- (void)generateLegitimateTraffic { NSLog(@"[BYTEPASS] generateLegitimateTraffic"); }
-- (void)createFakeSystemLogs { NSLog(@"[BYTEPASS] createFakeSystemLogs"); }
-- (void)forgeSystemIdentity { NSLog(@"[BYTEPASS] forgeSystemIdentity"); }
-- (void)spoofHardwareInfo { NSLog(@"[BYTEPASS] spoofHardwareInfo"); }
-- (void)fakeNetworkIdentity { NSLog(@"[BYTEPASS] fakeNetworkIdentity"); }
-
-@end
-
-// ================================================
-// 🔗 7. نظام الاتصال الآمن بالخادم
-// ================================================
-
-@interface SecureServerConnector : NSObject
-- (void)establishSecureConnection;
-- (NSData *)encryptedHandshake;
-- (BOOL)validateServerCertificate;
-- (void)disguiseAsLegitimateApp;
-- (void)useDomainFronting;
-- (void)implementTrafficObfuscation;
-- (void)implementFailoverSystem;
-- (void)rotateConnectionEndpoints;
-- (void)useProxiesAndVPNs;
-@end
-
-@implementation SecureServerConnector
-- (void)establishSecureConnection {
-    [self configureAntiBlockConnection];
+int is_jailbroken_paths() {
+    const char *paths[] = {
+        "/Applications/Cydia.app",
+        "/Library/MobileSubstrate/MobileSubstrate.dylib",
+        "/bin/bash",
+        "/usr/sbin/sshd",
+        "/etc/apt",
+        "/private/var/lib/apt/",
+        "/private/var/stash",
+        "/usr/libexec/cydia",
+        "/usr/sbin/frida-server",
+        "/usr/bin/ssh",
+        "/var/checkra1n.dmg",
+        "/.bootstrapped",
+        NULL
+    };
+    for (int i = 0; paths[i] != NULL; i++) {
+        if (access(paths[i], F_OK) == 0) return 1;
+    }
+    return 0;
 }
-- (void)configureAntiBlockConnection {
-    [self setupDomainFronting];
-    [self obfuscateProtocol];
-    [self mimicLegitimateTraffic];
+
+int is_cydia_installed() {
+#if TARGET_OS_IPHONE
+    Class lsApplicationWorkspace = objc_getClass("LSApplicationWorkspace");
+    if (lsApplicationWorkspace) {
+        SEL defaultWorkspace = sel_registerName("defaultWorkspace");
+        SEL openApplicationWithBundleID = sel_registerName("openApplicationWithBundleID:");
+        id workspace = ((id (*)(id, SEL))objc_msgSend)((id)lsApplicationWorkspace, defaultWorkspace);
+        if (workspace) {
+            int opened = ((int (*)(id, SEL, id))objc_msgSend)(workspace, openApplicationWithBundleID, @"com.saurik.Cydia");
+            return opened;
+        }
+    }
+#endif
+    return 0;
 }
-- (void)setupDomainFronting { NSLog(@"[BYTEPASS] setupDomainFronting"); }
-- (void)obfuscateProtocol { NSLog(@"[BYTEPASS] obfuscateProtocol"); }
-- (void)mimicLegitimateTraffic { NSLog(@"[BYTEPASS] mimicLegitimateTraffic"); }
-- (NSData *)encryptedHandshake { return [@"handshake" dataUsingEncoding:NSUTF8StringEncoding]; }
-- (BOOL)validateServerCertificate { return YES; }
-- (void)disguiseAsLegitimateApp { }
-- (void)useDomainFronting { }
-- (void)implementTrafficObfuscation { }
-- (void)implementFailoverSystem { }
-- (void)rotateConnectionEndpoints { }
-- (void)useProxiesAndVPNs { }
-@end
 
-// ================================================
-// ⚡ 8. نظام التنشيط والتشغيل
-// ================================================
+int is_dyld_hijacked() {
+    if (getenv("DYLD_INSERT_LIBRARIES") != NULL) return 1;
+    if (getenv("DYLD_FORCE_FLAT_NAMESPACE") != NULL) return 1;
+    return 0;
+}
 
-@interface HelperFunctions : NSObject
-+ (BOOL)isSecurityScanInProgress;
-+ (void)activateCounterMeasures;
-+ (void)hideAppImmediately:(NSString *)appID;
-+ (void)updateProtectionMechanisms;
-+ (void)startContinuousMonitoring;
-@end
+int is_debugger_attached() {
+    int name[4];
+    struct kinfo_proc info;
+    size_t info_size = sizeof(info);
+    info.kp_proc.p_flag = 0;
+    name[0] = CTL_KERN;
+    name[1] = KERN_PROC;
+    name[2] = KERN_PROC_PID;
+    name[3] = getpid();
+    if (sysctl(name, 4, &info, &info_size, NULL, 0) == -1) return 0;
+    return (info.kp_proc.p_flag & P_TRACED) != 0;
+}
 
-@implementation HelperFunctions
-+ (BOOL)isSecurityScanInProgress { return NO; }
-+ (void)activateCounterMeasures { NSLog(@"[BYTEPASS] تفعيل الإجراءات المضادة"); }
-+ (void)hideAppImmediately:(NSString *)appID { NSLog(@"[BYTEPASS] إخفاء فوري لـ %@", appID); }
-+ (void)updateProtectionMechanisms { NSLog(@"[BYTEPASS] تحديث آليات الحماية"); }
+int ptrace_deny_attach() {
+    load_real_ptrace();
+    if (!real_ptrace) return 1;
+    return (real_ptrace(PT_DENY_ATTACH, 0, 0, 0) == -1) ? 1 : 0;
+}
 
-+ (void)startContinuousMonitoring {
-    dispatch_async(dispatch_get_main_queue(), ^{
-        [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
-            if ([HelperFunctions isSecurityScanInProgress]) {
-                NSLog(@"[EXTERNAL BYPASS] ⚠️ تم اكتشاف فحص أمني");
-                [HelperFunctions activateCounterMeasures];
+int is_substrate_loaded() {
+    uint32_t count = _dyld_image_count();
+    for (uint32_t i = 0; i < count; i++) {
+        const char *name = _dyld_get_image_name(i);
+        if (strstr(name, "MobileSubstrate") || strstr(name, "Substrate") || strstr(name, "CydiaSubstrate"))
+            return 1;
+    }
+    return 0;
+}
+
+int is_ssh_running() { return (access("/usr/sbin/sshd", F_OK) == 0); }
+int is_apt_installed() { return (access("/etc/apt", F_OK) == 0); }
+int is_frida_installed() { return (access("/usr/sbin/frida-server", F_OK) == 0); }
+int is_debugserver_installed() { return (access("/Developer/usr/bin/debugserver", F_OK) == 0); }
+
+int check_provisioning() {
+    uint32_t size = 0;
+    _NSGetExecutablePath(NULL, &size);
+    if (size == 0) return 0;
+    
+    char *execPath = (char *)malloc(size); // Fix for VLA Array Bug
+    if (!execPath) return 0;
+    
+    _NSGetExecutablePath(execPath, &size);
+    char *lastSlash = strrchr(execPath, '/');
+    int is_debuggable = 0;
+    
+    if (lastSlash) {
+        *lastSlash = '\0';
+        char path[MAXPATHLEN];
+        snprintf(path, sizeof(path), "%s/embedded.mobileprovision", execPath);
+        FILE *fp = fopen(path, "r");
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long len = ftell(fp);
+            fseek(fp, 0, SEEK_SET);
+            char *data = (char *)malloc(len + 1);
+            if (data) {
+                fread(data, 1, len, fp);
+                data[len] = '\0';
+                is_debuggable = (strstr(data, "<key>get-task-allow</key><true/>") != NULL);
+                free(data);
             }
-            ExternalAppDetector *detector = [ExternalAppDetector new];
-            for (NSString *appID in detector.forbiddenAppIdentifiers) {
-                if ([detector isExternalAppRunning:appID]) {
-                    NSLog(@"[EXTERNAL BYPASS] ⚠️ تطبيق ممنوع يعمل: %@", appID);
-                    [HelperFunctions hideAppImmediately:appID];
+            fclose(fp);
+        }
+    }
+    free(execPath); // Fix for Memory Leak
+    return is_debuggable;
+}
+
+int check_env() {
+    const char *vars[] = {"DYLD_PRINT_TO_FILE", "DYLD_INSERT_LIBRARIES", "CFNETWORK_DIAGNOSTICS", "OBJC_DISABLE_VALIDATION", NULL};
+    for (int i = 0; vars[i] != NULL; i++) {
+        if (getenv(vars[i]) != NULL) return 1;
+    }
+    return 0;
+}
+
+int check_ppid() {
+    pid_t ppid = getppid();
+    char path[256];
+    snprintf(path, sizeof(path), "/proc/%d/exe", ppid);
+    if (access(path, F_OK) == 0) {
+        char target[256];
+        ssize_t len = readlink(path, target, sizeof(target)-1);
+        if (len != -1) {
+            target[len] = '\0';
+            if (strstr(target, "debugserver") || strstr(target, "lldb"))
+                return 1;
+        }
+    }
+    return 0;
+}
+
+int is_frida_loaded() {
+    return (dlopen("frida-agent.dylib", RTLD_NOLOAD) != NULL);
+}
+
+void perform_security_checks() {
+    int threat_level = 0;
+    if (is_simulator()) threat_level += 10;
+    if (is_jailbroken_paths()) threat_level += 20;
+    if (is_cydia_installed()) threat_level += 10;
+    if (is_dyld_hijacked()) threat_level += 30;
+    if (is_debugger_attached()) threat_level += 50;
+    if (ptrace_deny_attach()) threat_level += 30;
+    if (is_substrate_loaded()) threat_level += 20;
+    if (is_ssh_running()) threat_level += 10;
+    if (is_apt_installed()) threat_level += 10;
+    if (is_frida_installed() || is_frida_loaded()) threat_level += 40;
+    if (is_debugserver_installed()) threat_level += 20;
+    if (check_provisioning()) threat_level += 30;
+    if (check_env()) threat_level += 10;
+    if (check_ppid()) threat_level += 40;
+
+    if (threat_level > 50) {
+        usleep(rand() % 100000);
+        _exit(1);
+    }
+}
+
+// ============================================================================
+// Constructor with 20 seconds delay and UI Trigger
+// ============================================================================
+__attribute__((constructor))
+void init_hook() {
+    srand((unsigned int)time(NULL));
+    
+    // تشغيل الكود بأمان في الخلفية بعد تأخير 20 ثانية لتجنب Watchdog Timeout
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        
+        // 1. تفعيل الحماية
+        load_real_ptrace();
+        perform_security_checks();
+        fishhook_bindings();
+        swizzle_objc_methods();
+        
+        // 2. إرسال الطلب لظهور واجهة SwiftUI (BlackUIBridge) على الـ Main Thread
+        dispatch_async(dispatch_get_main_queue(), ^{
+            Class bridgeClass = NSClassFromString(@"BlackUIBridge");
+            if (bridgeClass) {
+                SEL showSel = NSSelectorFromString(@"showProtectionUI");
+                if ([bridgeClass respondsToSelector:showSel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [bridgeClass performSelector:showSel];
+                    #pragma clang diagnostic pop
+                } else {
+                    printf("[SEC] Error: Method showProtectionUI not found.\n");
                 }
+            } else {
+                printf("[SEC] Error: Swift Bridge Class not found.\n");
             }
-            [HelperFunctions updateProtectionMechanisms];
-        }];
+        });
     });
 }
-@end
-
-__attribute__((constructor))
-static void ExternalBypass_Init() {
-    @autoreleasepool {
-        NSLog(@"[EXTERNAL BYPASS] 🚀 تهيئة نظام تجاوز الفحص (iOS 18.5)");
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 2 * NSEC_PER_SEC), dispatch_get_main_queue(), ^{
-            ExternalAppDetector *detector = [ExternalAppDetector new];
-            [detector hideExternalApps];
-
-            SystemRegistryModifier *modifier = [SystemRegistryModifier new];
-            [modifier filterSystemLogs];
-
-            ProcessProtector *protector = [ProcessProtector new];
-            [protector antiDebug];
-            [protector hideProcessFromTaskList];
-
-            CommunicationInterceptor *interceptor = [CommunicationInterceptor new];
-            [interceptor interceptNotifications];
-
-            SystemSpoofer *spoofer = [SystemSpoofer new];
-            [spoofer spoofSystemProperties];  // تم التصحيح هنا
-
-            StealthSystemScanner *scanner = [StealthSystemScanner new];
-            [scanner stealthySystemScan];
-
-            SecureServerConnector *connector = [SecureServerConnector new];
-            [connector establishSecureConnection];
-
-            NSLog(@"[EXTERNAL BYPASS] ✅ النظام يعمل بنجاح");
-            [HelperFunctions startContinuousMonitoring];
-        });
-    }
-}
-
-// ================================================
-// 🛠️ 9. أدوات الطوارئ
-// ================================================
-
-@interface EmergencyTools : NSObject
-- (void)emergencyHideAll;
-- (void)deleteAllTraces;
-- (void)unloadAllComponents;
-- (void)restoreSystemState;
-- (void)removeAllModifications;
-- (void)cleanRegistryEntries;
-- (void)encryptSensitiveData;
-- (void)deleteSensitiveData;
-- (void)secureWipe;
-@end
-
-@implementation EmergencyTools
-- (void)emergencyHideAll {
-    [self stopAllHiddenProcesses];
-    [self deleteTemporaryFiles];
-    [self cleanMemory];
-    [self closeAllConnections];
-    NSLog(@"[EMERGENCY] 🚨 جميع الآثار تم إخفاؤها");
-}
-- (void)stopAllHiddenProcesses { }
-- (void)deleteTemporaryFiles { }
-- (void)cleanMemory { }
-- (void)closeAllConnections { }
-- (void)deleteAllTraces { [self emergencyHideAll]; }
-- (void)unloadAllComponents { }
-- (void)restoreSystemState { }
-- (void)removeAllModifications { }
-- (void)cleanRegistryEntries { }
-- (void)encryptSensitiveData { }
-- (void)deleteSensitiveData { }
-- (void)secureWipe {
-    NSArray *pathsToWipe = @[NSTemporaryDirectory(),
-                              [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"],
-                              [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs"]];
-    for (NSString *path in pathsToWipe) {
-        [[NSFileManager defaultManager] removeItemAtPath:path error:nil];
-    }
-}
-@end
-
-// ================================================
-// 📊 10. نظام التسجيل والتقارير
-// ================================================
-
-@interface StealthLogger : NSObject
-- (void)logToHiddenLocation:(NSString *)message;
-- (NSArray *)getStealthLogs;
-- (void)clearStealthLogs;
-- (NSData *)generateEncryptedReport;
-- (void)sendEncryptedReportToServer;
-- (void)hideLogsFromSystem;
-- (void)spoofLogEntries;
-@end
-
-@implementation StealthLogger
-- (void)logToHiddenLocation:(NSString *)message {
-    NSString *hiddenPath = [self getHiddenLogPath];
-    [[message dataUsingEncoding:NSUTF8StringEncoding] writeToFile:hiddenPath atomically:YES];
-}
-- (NSString *)getHiddenLogPath {
-    NSString *uuid = [NSUUID UUID].UUIDString;
-    NSString *hiddenDir = [NSHomeDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@".%@", uuid]];
-    [[NSFileManager defaultManager] createDirectoryAtPath:hiddenDir withIntermediateDirectories:YES attributes:nil error:nil];
-    return [hiddenDir stringByAppendingPathComponent:@"system.log"];
-}
-- (NSArray *)getStealthLogs { return @[]; }
-- (void)clearStealthLogs { }
-- (NSData *)generateEncryptedReport { return [NSData data]; }
-- (void)sendEncryptedReportToServer { }
-- (void)hideLogsFromSystem { }
-- (void)spoofLogEntries { }
-@end
-
-// ================================================
-// 🎮 11. تكامل مع نظام اللعبة
-// ================================================
-
-@interface GameIntegration : NSObject
-- (void)integrateSafelyWithGame;
-- (BOOL)isGameEnvironmentSafe;
-- (void)monitorGameCalls;
-- (void)protectFromInGameDetection;
-- (void)spoofGameAPIcalls;
-- (void)interceptGameChecks;
-- (void)optimizeForGamePerformance;
-- (void)reduceSystemImpact;
-@end
-
-@implementation GameIntegration
-- (void)integrateSafelyWithGame {
-    while (![self isGameLoaded]) usleep(100000);
-    [self hookGameFunctions];
-    [self monitorGameNetwork];
-    [self hideGameIntegration];
-}
-- (BOOL)isGameLoaded { return YES; }
-- (void)hookGameFunctions {
-    NSArray *functions = @[@"checkExternalApps", @"scanSystem", @"validateEnvironment"];
-    for (NSString *func in functions) { [self swizzleGameFunction:func]; }
-}
-- (void)swizzleGameFunction:(NSString *)funcName { NSLog(@"[BYTEPASS] تبديل دالة اللعبة: %@", funcName); }
-- (void)monitorGameNetwork { }
-- (void)hideGameIntegration { }
-- (BOOL)isGameEnvironmentSafe { return YES; }
-- (void)monitorGameCalls { }
-- (void)protectFromInGameDetection { }
-- (void)spoofGameAPIcalls { }
-- (void)interceptGameChecks { }
-- (void)optimizeForGamePerformance { }
-- (void)reduceSystemImpact { }
-@end
