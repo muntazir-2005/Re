@@ -2,36 +2,38 @@ import SwiftUI
 import UIKit
 
 // MARK: - Objective-C Bridge
-// هذا الكلاس وظيفته استقبال الطلب من ملف ANOGS.mm وعرض واجهة SwiftUI فوق التطبيق المستضيف
 @objc(BlackUIBridge)
 public class BlackUIBridge: NSObject {
     @objc public static func showProtectionUI() {
         DispatchQueue.main.async {
-            // البحث عن النافذة الرئيسية للتطبيق المستضيف
-            guard let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }),
-                  let rootVC = window.rootViewController else { return }
-            
-            // البحث عن الـ ViewController العلوي (Top-most)
-            var topController = rootVC
-            while let presented = topController.presentedViewController {
-                topController = presented
-            }
-            
-            // تغليف واجهة SwiftUI وعرضها
-            let hostingController = UIHostingController(rootView: MainContainerView())
-            hostingController.modalPresentationStyle = .overFullScreen
-            hostingController.view.backgroundColor = .clear // ضروري لتأثير الزجاج
-            
-            topController.present(hostingController, animated: true) {
-                // إطلاق إشعار لإظهار رسالة "تم تشغيل الحماية" بعد اكتمال ظهور الواجهة
-                NotificationCenter.default.post(name: NSNotification.Name("BlackProtectionActivated"), object: nil)
+            // التحقق من أن إصدار النظام iOS 15.0 فأحدث لدعم الواجهة الزجاجية
+            if #available(iOS 15.0, *) {
+                guard let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }),
+                      let rootVC = window.rootViewController else { return }
+                
+                var topController = rootVC
+                while let presented = topController.presentedViewController {
+                    topController = presented
+                }
+                
+                let hostingController = UIHostingController(rootView: MainContainerView())
+                hostingController.modalPresentationStyle = .overFullScreen
+                hostingController.view.backgroundColor = .clear // ضروري لتأثير الزجاج
+                
+                topController.present(hostingController, animated: true) {
+                    NotificationCenter.default.post(name: NSNotification.Name("BlackProtectionActivated"), object: nil)
+                }
+            } else {
+                // إذا كان النظام قديماً جداً (iOS 14)، ستعمل الحماية في الخلفية فقط بدون الواجهة الرسومية
+                print("[SEC] Protection Enabled. Premium UI requires iOS 15.0+")
             }
         }
     }
 }
 
-// MARK: - SwiftUI Views
+// MARK: - SwiftUI Views (iOS 15.0+)
 
+@available(iOS 15.0, *)
 struct MainContainerView: View {
     @State private var showProtectionToast = false
     @State private var isVisible = true
@@ -62,6 +64,7 @@ struct MainContainerView: View {
     }
 }
 
+@available(iOS 15.0, *)
 struct ProtectionToastView: View {
     var body: some View {
         HStack(spacing: 15) {
@@ -81,7 +84,7 @@ struct ProtectionToastView: View {
             Spacer()
         }
         .padding()
-        .background(.ultraThinMaterial)
+        .background(.ultraThinMaterial) // يتطلب iOS 15.0
         .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         .overlay(
             RoundedRectangle(cornerRadius: 20, style: .continuous)
@@ -93,13 +96,14 @@ struct ProtectionToastView: View {
     }
 }
 
+@available(iOS 15.0, *)
 struct HomeView: View {
     @State private var isAnimating = false
-    @Binding var isVisible: Bool // لإغلاق الواجهة والعودة للتطبيق الأساسي
+    @Binding var isVisible: Bool
     
     var body: some View {
         ZStack {
-            Color.black.opacity(0.95).ignoresSafeArea() // خلفية داكنة مع شفافية بسيطة
+            Color.black.opacity(0.95).ignoresSafeArea()
             
             Circle()
                 .fill(Color.blue.opacity(0.15))
@@ -118,7 +122,7 @@ struct HomeView: View {
                 
                 Text("BLACK")
                     .font(.system(size: 70, weight: .black, design: .rounded))
-                    .foregroundStyle(
+                    .foregroundStyle( // يتطلب iOS 15.0
                         LinearGradient(
                             colors: [Color.white, Color.gray.opacity(0.6)],
                             startPoint: .top,
@@ -145,6 +149,7 @@ struct HomeView: View {
     }
 }
 
+@available(iOS 15.0, *)
 struct GlassCardView: View {
     var icon: String; var title: String; var value: String; var color: Color
     var body: some View {
@@ -167,6 +172,7 @@ struct GlassCardView: View {
     }
 }
 
+@available(iOS 15.0, *)
 struct FloatingTabBar: View {
     @Binding var isVisible: Bool
     
@@ -175,13 +181,9 @@ struct FloatingTabBar: View {
             TabBarIcon(icon: "shield.fill", isSelected: true, action: nil)
             TabBarIcon(icon: "gearshape.fill", isSelected: false, action: nil)
             
-            // زر إغلاق الواجهة للعودة للتطبيق الأصلي
             TabBarIcon(icon: "xmark.circle.fill", isSelected: false) {
                 withAnimation {
-                    // تصغير ثم إخفاء الواجهة
                     isVisible = false
-                    
-                    // استدعاء دالة الإخفاء الخاصة بـ UIKit
                     guard let window = UIApplication.shared.windows.first(where: { $0.isKeyWindow }),
                           let rootVC = window.rootViewController else { return }
                     rootVC.dismiss(animated: true)
@@ -196,6 +198,7 @@ struct FloatingTabBar: View {
     }
 }
 
+@available(iOS 15.0, *)
 struct TabBarIcon: View {
     var icon: String; var isSelected: Bool; var action: (() -> Void)?
     var body: some View {
