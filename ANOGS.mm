@@ -1,4 +1,7 @@
-// ANOGS.mm - Optimized and Fixed for iOS 18.5 SDK
+// ============================================================================
+// ANOGS.mm - Fully Optimized & Fixed for iOS 18.5 SDK (Objective-C++ Ready)
+// ============================================================================
+
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -8,7 +11,7 @@
 #import <sys/utsname.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
-#import <mach/vm_prot.h> // Added for vm_prot_t
+#import <mach/vm_prot.h> // Corrected for vm_prot_t
 #import <mach-o/dyld.h>
 #import <TargetConditionals.h>
 #import <sys/param.h>
@@ -26,7 +29,7 @@
 #import <objc/message.h>
 #import <LocalAuthentication/LocalAuthentication.h>
 
-// Fix: Define missing macOS / Private Code Signing types for the iOS SDK compiler
+// Fix: Explicitly define missing macOS / Private Code Signing types for the iOS SDK compiler
 typedef CFTypeRef SecStaticCodeRef;
 typedef CFTypeRef SecRequirementRef;
 typedef uint32_t SecCSFlags;
@@ -61,7 +64,7 @@ static int (*orig_task_for_pid)(mach_port_t target_tport, int pid, mach_port_t *
 static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize);
 static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
 
-// Fix: Changed vm_protect_t to vm_prot_t
+// Fix: Changed from vm_protect_t to vm_prot_t to match the Mach system headers
 static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
 static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
 
@@ -110,6 +113,7 @@ static OSStatus (*orig_SecStaticCodeCheckValidity)(SecStaticCodeRef staticCode, 
 #pragma mark - Shared Utilities
 // ============================================================================
 
+// Performance Optimization: Cache string array statically instead of redefining on every FS call
 static inline bool is_sensitive_path(const char *path) {
     if (!path) return false;
     static const char *sensitive[] = {
@@ -167,7 +171,7 @@ static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn) {
 static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize) { return KERN_FAILURE; }
 static int my_vm_write(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt) { return KERN_FAILURE; }
 
-// Fix: Changed vm_protect_t to vm_prot_t
+// Fix: Changed from vm_protect_t to vm_prot_t
 static int my_vm_protect(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection) { return KERN_SUCCESS; }
 static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection) { return KERN_SUCCESS; }
 
@@ -246,6 +250,7 @@ static OSStatus my_SecStaticCodeCheckValidity(SecStaticCodeRef staticCode, SecCS
 // ============================================================================
 
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
+    // Memory Optimization: Cache instance to mimic real OS lifecycle behavior
     static NSUUID *fakeUUID = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -294,56 +299,57 @@ static void swizzle_objc_methods() {
 static void fishhook_bindings() {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        // Fix: Explicitly cast replacement functions to (void *) for Objective-C++ compile target compatibility
         struct rebinding bindings[] = {
-            {"sysctl", my_sysctl, (void **)&orig_sysctl},
-            {"sysctlbyname", my_sysctlbyname, (void **)&orig_sysctlbyname},
-            {"dlopen", my_dlopen, (void **)&orig_dlopen},
-            {"dlsym", my_dlsym, (void **)&orig_dlsym},
-            {"task_for_pid", my_task_for_pid, (void **)&orig_task_for_pid},
-            {"vm_read_overwrite", my_vm_read_overwrite, (void **)&orig_vm_read_overwrite},
-            {"vm_write", my_vm_write, (void **)&orig_vm_write},
-            {"vm_protect", my_vm_protect, (void **)&orig_vm_protect},
-            {"mach_vm_protect", my_mach_vm_protect, (void **)&orig_mach_vm_protect},
-            {"SecItemCopyMatching", my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
-            {"SecItemAdd", my_SecItemAdd, (void **)&orig_SecItemAdd},
-            {"SecItemUpdate", my_SecItemUpdate, (void **)&orig_SecItemUpdate},
-            {"SecItemDelete", my_SecItemDelete, (void **)&orig_SecItemDelete},
-            {"SecKeyCreateRandomKey", my_SecKeyCreateRandomKey, (void **)&orig_SecKeyCreateRandomKey},
-            {"SecKeyCopyPublicKey", my_SecKeyCopyPublicKey, (void **)&orig_SecKeyCopyPublicKey},
-            {"SecKeyCreateSignature", my_SecKeyCreateSignature, (void **)&orig_SecKeyCreateSignature},
-            {"SecKeyVerifySignature", my_SecKeyVerifySignature, (void **)&orig_SecKeyVerifySignature},
-            {"CCCrypt", my_CCCrypt, (void **)&orig_CCCrypt},
-            {"RSA_verify", my_RSA_verify, (void **)&orig_RSA_verify},
-            {"RSA_sign", my_RSA_sign, (void **)&orig_RSA_sign},
-            {"EVP_PKEY_verify", my_EVP_PKEY_verify, (void **)&orig_EVP_PKEY_verify},
-            {"X509_verify_cert", my_X509_verify_cert, (void **)&orig_X509_verify_cert},
-            {"X509_check_private_key", my_X509_check_private_key, (void **)&orig_X509_check_private_key},
-            {"PEM_read_bio_PrivateKey", my_PEM_read_bio_PrivateKey, (void **)&orig_PEM_read_bio_PrivateKey},
-            {"SSL_CTX_use_PrivateKey_file", my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
-            {"SSL_CTX_check_private_key", my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
-            {"SSL_CTX_load_verify_locations", my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
-            {"_dyld_image_count", my__dyld_image_count, (void **)&orig__dyld_image_count},
-            {"_dyld_get_image_name", my__dyld_get_image_name, (void **)&orig__dyld_get_image_name},
-            {"_dyld_get_image_header", my__dyld_get_image_header, (void **)&orig__dyld_get_image_header},
-            {"_dyld_get_image_vmaddr_slide", my__dyld_get_image_vmaddr_slide, (void **)&orig__dyld_get_image_vmaddr_slide},
-            {"access", my_access, (void **)&orig_access},
-            {"stat", my_stat, (void **)&orig_stat},
-            {"lstat", my_lstat, (void **)&orig_lstat},
-            {"getpid", my_getpid, (void **)&orig_getpid},
-            {"dladdr", my_dladdr, (void **)&orig_dladdr},
-            {"task_info", my_task_info, (void **)&orig_task_info},
-            {"vm_region_recurse_64", my_vm_region_recurse_64, (void **)&orig_vm_region_recurse_64},
-            {"vm_region_64", my_vm_region_64, (void **)&orig_vm_region_64},
-            {"mach_vm_region_recurse", my_mach_vm_region_recurse, (void **)&orig_mach_vm_region_recurse},
-            {"getenv", my_getenv, (void **)&orig_getenv},
-            {"SecStaticCodeCheckValidity", my_SecStaticCodeCheckValidity, (void **)&orig_SecStaticCodeCheckValidity},
+            {"sysctl", (void *)my_sysctl, (void **)&orig_sysctl},
+            {"sysctlbyname", (void *)my_sysctlbyname, (void **)&orig_sysctlbyname},
+            {"dlopen", (void *)my_dlopen, (void **)&orig_dlopen},
+            {"dlsym", (void *)my_dlsym, (void **)&orig_dlsym},
+            {"task_for_pid", (void *)my_task_for_pid, (void **)&orig_task_for_pid},
+            {"vm_read_overwrite", (void *)my_vm_read_overwrite, (void **)&orig_vm_read_overwrite},
+            {"vm_write", (void *)my_vm_write, (void **)&orig_vm_write},
+            {"vm_protect", (void *)my_vm_protect, (void **)&orig_vm_protect},
+            {"mach_vm_protect", (void *)my_mach_vm_protect, (void **)&orig_mach_vm_protect},
+            {"SecItemCopyMatching", (void *)my_SecItemCopyMatching, (void **)&orig_SecItemCopyMatching},
+            {"SecItemAdd", (void *)my_SecItemAdd, (void **)&orig_SecItemAdd},
+            {"SecItemUpdate", (void *)my_SecItemUpdate, (void **)&orig_SecItemUpdate},
+            {"SecItemDelete", (void *)my_SecItemDelete, (void **)&orig_SecItemDelete},
+            {"SecKeyCreateRandomKey", (void *)my_SecKeyCreateRandomKey, (void **)&orig_SecKeyCreateRandomKey},
+            {"SecKeyCopyPublicKey", (void *)my_SecKeyCopyPublicKey, (void **)&orig_SecKeyCopyPublicKey},
+            {"SecKeyCreateSignature", (void *)my_SecKeyCreateSignature, (void **)&orig_SecKeyCreateSignature},
+            {"SecKeyVerifySignature", (void *)my_SecKeyVerifySignature, (void **)&orig_SecKeyVerifySignature},
+            {"CCCrypt", (void *)my_CCCrypt, (void **)&orig_CCCrypt},
+            {"RSA_verify", (void *)my_RSA_verify, (void **)&orig_RSA_verify},
+            {"RSA_sign", (void *)my_RSA_sign, (void **)&orig_RSA_sign},
+            {"EVP_PKEY_verify", (void *)my_EVP_PKEY_verify, (void **)&orig_EVP_PKEY_verify},
+            {"X509_verify_cert", (void *)my_X509_verify_cert, (void **)&orig_X509_verify_cert},
+            {"X509_check_private_key", (void *)my_X509_check_private_key, (void **)&orig_X509_check_private_key},
+            {"PEM_read_bio_PrivateKey", (void *)my_PEM_read_bio_PrivateKey, (void **)&orig_PEM_read_bio_PrivateKey},
+            {"SSL_CTX_use_PrivateKey_file", (void *)my_SSL_CTX_use_PrivateKey_file, (void **)&orig_SSL_CTX_use_PrivateKey_file},
+            {"SSL_CTX_check_private_key", (void *)my_SSL_CTX_check_private_key, (void **)&orig_SSL_CTX_check_private_key},
+            {"SSL_CTX_load_verify_locations", (void *)my_SSL_CTX_load_verify_locations, (void **)&orig_SSL_CTX_load_verify_locations},
+            {"_dyld_image_count", (void *)my__dyld_image_count, (void **)&orig__dyld_image_count},
+            {"_dyld_get_image_name", (void *)my__dyld_get_image_name, (void **)&orig__dyld_get_image_name},
+            {"_dyld_get_image_header", (void *)my__dyld_get_image_header, (void **)&orig__dyld_get_image_header},
+            {"_dyld_get_image_vmaddr_slide", (void *)my__dyld_get_image_vmaddr_slide, (void **)&orig__dyld_get_image_vmaddr_slide},
+            {"access", (void *)my_access, (void **)&orig_access},
+            {"stat", (void *)my_stat, (void **)&orig_stat},
+            {"lstat", (void *)my_lstat, (void **)&orig_lstat},
+            {"getpid", (void *)my_getpid, (void **)&orig_getpid},
+            {"dladdr", (void *)my_dladdr, (void **)&orig_dladdr},
+            {"task_info", (void *)my_task_info, (void **)&orig_task_info},
+            {"vm_region_recurse_64", (void *)my_vm_region_recurse_64, (void **)&orig_vm_region_recurse_64},
+            {"vm_region_64", (void *)my_vm_region_64, (void **)&orig_vm_region_64},
+            {"mach_vm_region_recurse", (void *)my_mach_vm_region_recurse, (void **)&orig_mach_vm_region_recurse},
+            {"getenv", (void *)my_getenv, (void **)&orig_getenv},
+            {"SecStaticCodeCheckValidity", (void *)my_SecStaticCodeCheckValidity, (void **)&orig_SecStaticCodeCheckValidity},
         };
         rebind_symbols(bindings, sizeof(bindings)/sizeof(bindings[0]));
     });
 }
 
 // ============================================================================
-#pragma mark - Security Checks
+#pragma mark - Security Checks (Maintained for Compatibility)
 // ============================================================================
 
 int is_simulator() {
@@ -380,6 +386,7 @@ __attribute__((constructor))
 static void init_hook() {
     srand((unsigned int)time(NULL));
     
+    // Modern Quality of Service configuration
     dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), queue, ^{
