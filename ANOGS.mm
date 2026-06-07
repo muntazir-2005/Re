@@ -1,5 +1,4 @@
 // =============== نظام تعطيل فحص التطبيقات الخارجية والطرفية ===============
-// الملف: ANOGS.mm
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
@@ -9,12 +8,17 @@
 #import <objc/runtime.h>
 #import <os/log.h>
 #import <UIKit/UIKit.h>
-#import <CoreServices/CoreServices.h>   // بدلاً من LaunchServices (غير متوفر على iOS)
+#import <CoreServices/CoreServices.h>
+#import <mach/mach.h>                // إضافة لـ mach_task_self, vm_region_recurse_64
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <time.h>
 
-// تعريفات إضافية للتوافق مع iOS
+// تجاهل تحذيرات syscall
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+
+// تعريفات إضافية
 #ifndef PT_DENY_ATTACH
 #define PT_DENY_ATTACH 31
 #endif
@@ -24,131 +28,75 @@
 // ================================================
 
 @interface ExternalAppDetector : NSObject
-
-#pragma mark - قوائم التطبيقات المحظورة
 @property (strong, nonatomic) NSArray *forbiddenAppIdentifiers;
 @property (strong, nonatomic) NSArray *forbiddenProcessNames;
 @property (strong, nonatomic) NSArray *forbiddenLibraryNames;
-
-#pragma mark - كشف التطبيقات
 - (BOOL)isExternalAppRunning:(NSString *)appIdentifier;
 - (BOOL)isTerminalAppInstalled;
 - (BOOL)isDebuggingToolPresent;
-
-#pragma mark - إخفاء التطبيقات
 - (void)hideExternalApps;
 - (void)spoofProcessList;
 - (void)modifyAppRegistry;
-
 @end
 
 @implementation ExternalAppDetector
-
 - (instancetype)init {
     self = [super init];
     if (self) {
-        // قوائم التطبيقات المحظورة
         self.forbiddenAppIdentifiers = @[
-            @"com.apple.Terminal",
-            @"com.googlecode.iterm2",
-            @"com.sublimetext.3",
-            @"com.microsoft.VSCode",
-            @"org.gnu.Emacs",
-            @"org.vim.MacVim",
-            @"com.hexrays.ida",
-            @"com.hopperapp.hopper",
-            @"com.ollydbg.OllyDbg",
-            @"org.wireshark.Wireshark",
-            @"com.charles.Charles",
-            @"com.burpsuite.BurpSuite",
-            @"com.frida.Frida",
-            @"com.cydiasubstrate.Substrate",
-            @"com.electra.electra",
+            @"com.apple.Terminal", @"com.googlecode.iterm2", @"com.sublimetext.3",
+            @"com.microsoft.VSCode", @"org.gnu.Emacs", @"org.vim.MacVim",
+            @"com.hexrays.ida", @"com.hopperapp.hopper", @"com.ollydbg.OllyDbg",
+            @"org.wireshark.Wireshark", @"com.charles.Charles", @"com.burpsuite.BurpSuite",
+            @"com.frida.Frida", @"com.cydiasubstrate.Substrate", @"com.electra.electra",
             @"org.coolstar.Sileo"
         ];
-        
         self.forbiddenProcessNames = @[
-            @"Terminal", @"iTerm", @"zsh", @"bash",
-            @"ssh", @"telnet", @"nc", @"netcat",
-            @"gdb", @"lldb", @"dtrace", @"strace",
-            @"frida", @"frida-server", @"cycript",
+            @"Terminal", @"iTerm", @"zsh", @"bash", @"ssh", @"telnet", @"nc", @"netcat",
+            @"gdb", @"lldb", @"dtrace", @"strace", @"frida", @"frida-server", @"cycript",
             @"Clutch", @"dumpdecrypted", @"class-dump"
         ];
-        
         self.forbiddenLibraryNames = @[
-            @"libfrida", @"libsubstrate", @"libcycript",
-            @"libhooker", @"libobjc", @"libdispatch",
-            @"libsystem_kernel", @"libsystem_platform"
+            @"libfrida", @"libsubstrate", @"libcycript", @"libhooker", @"libobjc",
+            @"libdispatch", @"libsystem_kernel", @"libsystem_platform"
         ];
     }
     return self;
 }
-
 - (BOOL)isExternalAppRunning:(NSString *)appIdentifier {
-    // التحقق عبر sysctl (يعمل على iOS)
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
     size_t size;
     sysctl(mib, 4, NULL, &size, NULL, 0);
-    
     struct kinfo_proc *procs = (struct kinfo_proc *)malloc(size);
     if (!procs) return NO;
     sysctl(mib, 4, procs, &size, NULL, 0);
-    
     int count = (int)(size / sizeof(struct kinfo_proc));
     BOOL found = NO;
     for (int i = 0; i < count; i++) {
         NSString *procName = [NSString stringWithUTF8String:procs[i].kp_proc.p_comm];
-        if ([procName containsString:appIdentifier]) {
-            found = YES;
-            break;
-        }
+        if ([procName containsString:appIdentifier]) { found = YES; break; }
     }
     free(procs);
     return found;
 }
-
-- (BOOL)isTerminalAppInstalled {
-    return NO;
-}
-
-- (BOOL)isDebuggingToolPresent {
-    return NO;
-}
-
+- (BOOL)isTerminalAppInstalled { return NO; }
+- (BOOL)isDebuggingToolPresent { return NO; }
 - (void)hideExternalApps {
     [self swizzleWorkspaceMethods];
     [self patchProcessList];
     [self hideFromLaunchServices];
 }
-
-- (void)spoofProcessList {
-    // فارغ
-}
-
-- (void)modifyAppRegistry {
-    // فارغ
-}
-
-- (void)swizzleWorkspaceMethods {
-    // فارغ
-}
-
-- (void)patchProcessList {
-    // فارغ
-}
-
-- (void)hideFromLaunchServices {
-    // فارغ
-}
-
+- (void)spoofProcessList { }
+- (void)modifyAppRegistry { }
+- (void)swizzleWorkspaceMethods { }
+- (void)patchProcessList { }
+- (void)hideFromLaunchServices { }
 @end
 
 // ================================================
 // 🔧 2. نظام تعديل تسجيلات النظام
 // ================================================
-
 @interface SystemRegistryModifier : NSObject
-
 - (void)removeAppFromLaunchServices:(NSString *)bundleID;
 - (void)spoofAppRegistryEntry:(NSString *)bundleID;
 - (BOOL)isAppHiddenFromSystem:(NSString *)bundleID;
@@ -156,51 +104,27 @@
 - (void)removeAppTracesFromLogs:(NSString *)bundleID;
 - (void)disableFSEventsForApp:(NSString *)appPath;
 - (void)clearFSEventsDatabase;
-
 @end
 
 @implementation SystemRegistryModifier
-
 - (void)removeAppFromLaunchServices:(NSString *)bundleID {
-    // LSRegisterURL غير متوفرة على iOS، نترك الدالة فارغة للحفاظ على السلوك الأصلي
     NSLog(@"[BYTEPASS] removeAppFromLaunchServices (no effect on iOS)");
 }
-
-- (void)spoofAppRegistryEntry:(NSString *)bundleID {
-    // فارغ
-}
-
-- (BOOL)isAppHiddenFromSystem:(NSString *)bundleID {
-    return YES;
-}
-
+- (void)spoofAppRegistryEntry:(NSString *)bundleID { }
+- (BOOL)isAppHiddenFromSystem:(NSString *)bundleID { return YES; }
 - (void)filterSystemLogs {
     os_log_t customLog = os_log_create("com.bytepass.system", "filtered");
-    if (customLog) {
-        os_log(customLog, "System log filter active");
-    }
+    if (customLog) os_log(customLog, "System log filter active");
 }
-
-- (void)removeAppTracesFromLogs:(NSString *)bundleID {
-    // فارغ
-}
-
-- (void)disableFSEventsForApp:(NSString *)appPath {
-    // فارغ
-}
-
-- (void)clearFSEventsDatabase {
-    // فارغ
-}
-
+- (void)removeAppTracesFromLogs:(NSString *)bundleID { }
+- (void)disableFSEventsForApp:(NSString *)appPath { }
+- (void)clearFSEventsDatabase { }
 @end
 
 // ================================================
 // 🛡️ 3. نظام حماية العمليات
 // ================================================
-
 @interface ProcessProtector : NSObject
-
 - (void)hideProcessFromTaskList;
 - (void)spoofProcessName:(const char *)newName;
 - (void)randomizeProcessID;
@@ -210,110 +134,72 @@
 - (BOOL)isProcessBeingTraced;
 - (void)antiDebug;
 - (void)antiAttach;
-
 @end
 
 @implementation ProcessProtector
-
 - (void)hideProcessFromTaskList {
     [self manipulateKernelProcessList];
     [self patchSysctlHandlers];
     [self hideFromProcFS];
 }
-
 - (void)spoofProcessName:(const char *)newName { }
 - (void)randomizeProcessID { }
 - (void)protectProcessMemory { }
 - (void)encryptProcessSegments { }
 - (void)implementASLR { }
 - (BOOL)isProcessBeingTraced { return NO; }
-
 - (void)antiDebug {
     [self checkPTRACE];
     [self checkSysctl];
     [self checkExceptionPorts];
 }
-
 - (void)antiAttach { }
-
 - (void)manipulateKernelProcessList { }
 - (void)patchSysctlHandlers { }
 - (void)hideFromProcFS { }
 - (void)checkSysctl { }
 - (void)checkExceptionPorts { }
-
 - (void)checkPTRACE {
     syscall(SYS_ptrace, PT_DENY_ATTACH, 0, 0, 0);
 }
-
 @end
 
 // ================================================
-// 📡 4. نظام اعتراض واستبدال الاتصالات
+// 📡 4. نظام اعتراض الاتصالات (محاكاة لأن NSDistributedNotificationCenter غير متوفر على iOS)
 // ================================================
-
 @interface CommunicationInterceptor : NSObject
-
 - (void)interceptDistributedNotifications;
 - (void)filterNSNotifications;
 - (void)interceptMachPorts;
 - (void)spoofMachMessages;
 - (void)interceptXPCConnections;
 - (void)spoofXPCResponses;
-
 @end
 
 @implementation CommunicationInterceptor
-
 - (void)interceptDistributedNotifications {
-    [[NSDistributedNotificationCenter defaultCenter] addObserver:self
-        selector:@selector(handleNotification:)
-        name:nil
-        object:nil
-        suspensionBehavior:NSNotificationSuspensionBehaviorDeliverImmediately];
+    // غير متوفر على iOS - نتركه فارغاً
 }
-
-- (void)handleNotification:(NSNotification *)notification {
-    NSString *name = notification.name;
-    NSArray *securityNotifications = @[
-        @"com.apple.security.assessment",
-        @"com.apple.security.scan",
-        @"com.game.anticheat.scan",
-        @"com.game.anticheat.detection"
-    ];
-    if ([securityNotifications containsObject:name]) {
-        NSLog(@"[BYTEPASS] 🛡️ تم اعتراض إشعار فحص أمني: %@", name);
-        return;
-    }
-    [[NSDistributedNotificationCenter defaultCenter] postNotificationName:name
-        object:notification.object];
-}
-
 - (void)filterNSNotifications { }
 - (void)interceptMachPorts { }
 - (void)spoofMachMessages { }
 - (void)interceptXPCConnections { }
 - (void)spoofXPCResponses { }
-
 @end
 
 // ================================================
 // 🔍 5. نظام فحص النظام المخفي
 // ================================================
-
 @interface StealthSystemScanner : NSObject
-
 - (NSDictionary *)stealthySystemScan;
 - (BOOL)detectHiddenApps;
 - (NSArray *)findConcealedComponents;
 - (NSDictionary *)hiddenMemoryAnalysis;
 - (BOOL)scanForInjectedCode;
 - (void)monitorHiddenNetworkActivity;
-
 @end
 
 @implementation StealthSystemScanner
-
 - (NSDictionary *)stealthySystemScan {
     NSMutableDictionary *scanResults = [NSMutableDictionary new];
     scanResults[@"memory"] = [self hiddenMemoryScan];
@@ -321,13 +207,8 @@
     scanResults[@"network"] = [self hiddenNetworkScan];
     scanResults[@"processes"] = [self hiddenProcessScan];
     NSData *encryptedResults = [self encryptScanResults:scanResults];
-    return @{
-        @"scan": encryptedResults,
-        @"timestamp": [NSDate date],
-        @"signature": [self generateScanSignature]
-    };
+    return @{@"scan": encryptedResults, @"timestamp": [NSDate date], @"signature": [self generateScanSignature]};
 }
-
 - (NSDictionary *)hiddenMemoryScan {
     mach_port_t task = mach_task_self();
     vm_address_t address = 0;
@@ -336,17 +217,12 @@
     NSMutableArray *suspiciousRegions = [NSMutableArray new];
     while (vm_region_recurse_64(task, &address, &size, &depth, (vm_region_info_64_t)NULL) == KERN_SUCCESS) {
         if ([self isSuspiciousMemoryRegion:address size:size]) {
-            [suspiciousRegions addObject:@{
-                @"address": @(address),
-                @"size": @(size),
-                @"protection": [self getRegionProtection:address]
-            }];
+            [suspiciousRegions addObject:@{@"address": @(address), @"size": @(size), @"protection": [self getRegionProtection:address]}];
         }
         address += size;
     }
     return @{@"suspicious_regions": suspiciousRegions};
 }
-
 - (NSDictionary *)hiddenFilesystemScan { return @{}; }
 - (NSDictionary *)hiddenNetworkScan { return @{}; }
 - (NSDictionary *)hiddenProcessScan { return @{}; }
@@ -359,15 +235,12 @@
 - (NSDictionary *)hiddenMemoryAnalysis { return @{}; }
 - (BOOL)scanForInjectedCode { return NO; }
 - (void)monitorHiddenNetworkActivity { }
-
 @end
 
 // ================================================
 // 🎭 6. نظام التمويه والمحاكاة
 // ================================================
-
 @interface SystemSpoofer : NSObject
-
 - (void)spoofSystemProperties;
 - (void)fakeEnvironmentVariables;
 - (void)modifySystemCalls;
@@ -377,29 +250,22 @@
 - (void)forgeSystemIdentity;
 - (void)spoofHardwareInfo;
 - (void)fakeNetworkIdentity;
-
 @end
 
 @implementation SystemSpoofer
-
 - (void)spoofSystemProperties {
     [self setSystemVersion:@"15.0.0"];
     [self setMachineModel:@"MacBookPro18,3"];
     [self setHardwareUUID:[NSUUID UUID].UUIDString];
 }
-
 - (void)setSystemVersion:(NSString *)version {
-    Method originalMethod = class_getInstanceMethod(
-        [NSProcessInfo class],
-        @selector(operatingSystemVersion)
-    );
+    Method originalMethod = class_getInstanceMethod([NSProcessInfo class], @selector(operatingSystemVersion));
     IMP fakeImplementation = imp_implementationWithBlock(^{
-        NSOperatingSystemVersion fakeVersion = {15, 0, 0};
+        NSOperatingSystemVersion fakeVersion = {15,0,0};
         return fakeVersion;
     });
     method_setImplementation(originalMethod, fakeImplementation);
 }
-
 - (void)setMachineModel:(NSString *)model { }
 - (void)setHardwareUUID:(NSString *)uuid { }
 - (void)fakeEnvironmentVariables { }
@@ -410,15 +276,12 @@
 - (void)forgeSystemIdentity { }
 - (void)spoofHardwareInfo { }
 - (void)fakeNetworkIdentity { }
-
 @end
 
 // ================================================
 // 🔗 7. نظام الاتصال الآمن بالخادم
 // ================================================
-
 @interface SecureServerConnector : NSObject
-
 - (void)establishSecureConnection;
 - (NSData *)encryptedHandshake;
 - (BOOL)validateServerCertificate;
@@ -428,21 +291,17 @@
 - (void)implementFailoverSystem;
 - (void)rotateConnectionEndpoints;
 - (void)useProxiesAndVPNs;
-
 @end
 
 @implementation SecureServerConnector
-
 - (void)establishSecureConnection {
     [self configureAntiBlockConnection];
 }
-
 - (void)configureAntiBlockConnection {
     [self setupDomainFronting];
     [self obfuscateProtocol];
     [self mimicLegitimateTraffic];
 }
-
 - (NSData *)encryptedHandshake { return [NSData data]; }
 - (BOOL)validateServerCertificate { return YES; }
 - (void)disguiseAsLegitimateApp { }
@@ -454,12 +313,41 @@
 - (void)setupDomainFronting { }
 - (void)obfuscateProtocol { }
 - (void)mimicLegitimateTraffic { }
-
 @end
 
 // ================================================
 // ⚡ 8. نظام التنشيط والتشغيل (Constructor الأصلي)
 // ================================================
+@interface ExternalBypass : NSObject
++ (void)startContinuousMonitoring;
++ (BOOL)isSecurityScanInProgress;
++ (void)activateCounterMeasures;
++ (void)hideAppImmediately:(NSString *)appID;
++ (void)updateProtectionMechanisms;
+@end
+
+@implementation ExternalBypass
++ (BOOL)isSecurityScanInProgress { return NO; }
++ (void)activateCounterMeasures { }
++ (void)hideAppImmediately:(NSString *)appID { }
++ (void)updateProtectionMechanisms { }
++ (void)startContinuousMonitoring {
+    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
+        if ([self isSecurityScanInProgress]) {
+            NSLog(@"[EXTERNAL BYPASS] ⚠️ تم اكتشاف فحص أمني - تفعيل الإجراءات المضادة");
+            [self activateCounterMeasures];
+        }
+        ExternalAppDetector *detector = [ExternalAppDetector new];
+        for (NSString *appID in detector.forbiddenAppIdentifiers) {
+            if ([detector isExternalAppRunning:appID]) {
+                NSLog(@"[EXTERNAL BYPASS] ⚠️ تطبيق ممنوع يعمل: %@", appID);
+                [self hideAppImmediately:appID];
+            }
+        }
+        [self updateProtectionMechanisms];
+    }];
+}
+@end
 
 __attribute__((constructor))
 static void ExternalBypass_Init() {
@@ -482,39 +370,15 @@ static void ExternalBypass_Init() {
             SecureServerConnector *connector = [SecureServerConnector new];
             [connector establishSecureConnection];
             NSLog(@"[EXTERNAL BYPASS] ✅ النظام يعمل بنجاح");
-            [self startContinuousMonitoring];
+            [ExternalBypass startContinuousMonitoring];
         });
     }
 }
 
-void startContinuousMonitoring() {
-    [NSTimer scheduledTimerWithTimeInterval:1.0 repeats:YES block:^(NSTimer *timer) {
-        if ([self isSecurityScanInProgress]) {
-            NSLog(@"[EXTERNAL BYPASS] ⚠️ تم اكتشاف فحص أمني - تفعيل الإجراءات المضادة");
-            [self activateCounterMeasures];
-        }
-        ExternalAppDetector *detector = [ExternalAppDetector new];
-        for (NSString *appID in detector.forbiddenAppIdentifiers) {
-            if ([detector isExternalAppRunning:appID]) {
-                NSLog(@"[EXTERNAL BYPASS] ⚠️ تطبيق ممنوع يعمل: %@", appID);
-                [self hideAppImmediately:appID];
-            }
-        }
-        [self updateProtectionMechanisms];
-    }];
-}
-
-+ (BOOL)isSecurityScanInProgress { return NO; }
-+ (void)activateCounterMeasures { }
-+ (void)hideAppImmediately:(NSString *)appID { }
-+ (void)updateProtectionMechanisms { }
-
 // ================================================
 // 🛠️ 9. أدوات الطوارئ
 // ================================================
-
 @interface EmergencyTools : NSObject
-
 - (void)emergencyHideAll;
 - (void)deleteAllTraces;
 - (void)unloadAllComponents;
@@ -524,11 +388,9 @@ void startContinuousMonitoring() {
 - (void)encryptSensitiveData;
 - (void)deleteSensitiveData;
 - (void)secureWipe;
-
 @end
 
 @implementation EmergencyTools
-
 - (void)emergencyHideAll {
     [self stopAllHiddenProcesses];
     [self deleteTemporaryFiles];
@@ -536,18 +398,10 @@ void startContinuousMonitoring() {
     [self closeAllConnections];
     NSLog(@"[EMERGENCY] 🚨 جميع الآثار تم إخفاؤها");
 }
-
 - (void)secureWipe {
-    NSArray *pathsToWipe = @[
-        NSTemporaryDirectory(),
-        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"],
-        [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs"]
-    ];
-    for (NSString *path in pathsToWipe) {
-        [self secureDeletePath:path];
-    }
+    NSArray *pathsToWipe = @[NSTemporaryDirectory(), [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Caches"], [NSHomeDirectory() stringByAppendingPathComponent:@"Library/Logs"]];
+    for (NSString *path in pathsToWipe) [self secureDeletePath:path];
 }
-
 - (void)stopAllHiddenProcesses { }
 - (void)deleteTemporaryFiles { }
 - (void)cleanMemory { }
@@ -560,15 +414,12 @@ void startContinuousMonitoring() {
 - (void)cleanRegistryEntries { }
 - (void)encryptSensitiveData { }
 - (void)deleteSensitiveData { }
-
 @end
 
 // ================================================
 // 📊 10. نظام التسجيل والتقارير
 // ================================================
-
 @interface StealthLogger : NSObject
-
 - (void)logToHiddenLocation:(NSString *)message;
 - (NSArray *)getStealthLogs;
 - (void)clearStealthLogs;
@@ -576,11 +427,9 @@ void startContinuousMonitoring() {
 - (void)sendEncryptedReportToServer;
 - (void)hideLogsFromSystem;
 - (void)spoofLogEntries;
-
 @end
 
 @implementation StealthLogger
-
 - (void)logToHiddenLocation:(NSString *)message {
     [self writeToHiddenMemory:message];
     NSData *encryptedMessage = [self encryptLogMessage:message];
@@ -588,19 +437,13 @@ void startContinuousMonitoring() {
     [encryptedMessage writeToFile:hiddenPath atomically:YES];
     [self hideFile:hiddenPath];
 }
-
 - (NSString *)getHiddenLogPath {
     NSString *uuid = [NSUUID UUID].UUIDString;
-    NSString *hiddenDir = [NSHomeDirectory() stringByAppendingPathComponent:
-                          [NSString stringWithFormat:@".%@", uuid]];
-    [[NSFileManager defaultManager] createDirectoryAtPath:hiddenDir
-                              withIntermediateDirectories:YES
-                                               attributes:nil
-                                                    error:nil];
+    NSString *hiddenDir = [NSHomeDirectory() stringByAppendingPathComponent:[NSString stringWithFormat:@".%@", uuid]];
+    [[NSFileManager defaultManager] createDirectoryAtPath:hiddenDir withIntermediateDirectories:YES attributes:nil error:nil];
     [self setHiddenAttribute:hiddenDir];
     return [hiddenDir stringByAppendingPathComponent:@"system.log"];
 }
-
 - (void)writeToHiddenMemory:(NSString *)msg { }
 - (NSData *)encryptLogMessage:(NSString *)msg { return [msg dataUsingEncoding:NSUTF8StringEncoding]; }
 - (void)hideFile:(NSString *)path { }
@@ -611,15 +454,12 @@ void startContinuousMonitoring() {
 - (void)sendEncryptedReportToServer { }
 - (void)hideLogsFromSystem { }
 - (void)spoofLogEntries { }
-
 @end
 
 // ================================================
 // 🎮 11. تكامل مع نظام اللعبة
 // ================================================
-
 @interface GameIntegration : NSObject
-
 - (void)integrateSafelyWithGame;
 - (BOOL)isGameEnvironmentSafe;
 - (void)monitorGameCalls;
@@ -628,25 +468,19 @@ void startContinuousMonitoring() {
 - (void)interceptGameChecks;
 - (void)optimizeForGamePerformance;
 - (void)reduceSystemImpact;
-
 @end
 
 @implementation GameIntegration
-
 - (void)integrateSafelyWithGame {
-    while (![self isGameLoaded]) { usleep(100000); }
+    while (![self isGameLoaded]) usleep(100000);
     [self hookGameFunctions];
     [self monitorGameNetwork];
     [self hideGameIntegration];
 }
-
 - (void)hookGameFunctions {
     NSArray *criticalFunctions = @[@"checkExternalApps", @"scanSystem", @"validateEnvironment", @"reportSuspiciousActivity"];
-    for (NSString *funcName in criticalFunctions) {
-        [self swizzleGameFunction:funcName];
-    }
+    for (NSString *funcName in criticalFunctions) [self swizzleGameFunction:funcName];
 }
-
 - (BOOL)isGameLoaded { return YES; }
 - (void)monitorGameNetwork { }
 - (void)hideGameIntegration { }
@@ -658,33 +492,26 @@ void startContinuousMonitoring() {
 - (void)interceptGameChecks { }
 - (void)optimizeForGamePerformance { }
 - (void)reduceSystemImpact { }
-
 @end
 
 // ============================================================================
 // دوال مساعدة للـ Constructor الجديد
 // ============================================================================
-
 void load_real_ptrace(void) {
-#ifdef PT_DENY_ATTACH
-    ptrace(PT_DENY_ATTACH, 0, 0, 0);
-#endif
+    syscall(SYS_ptrace, PT_DENY_ATTACH, 0, 0, 0);
 }
-
 void perform_security_checks(void) {
     NSLog(@"[SEC] Perform security checks (placeholder)");
 }
-
 void fishhook_bindings(void) {
     NSLog(@"[SEC] Fishhook bindings (placeholder)");
 }
-
 void swizzle_objc_methods(void) {
     NSLog(@"[SEC] Objective-C method swizzling (placeholder)");
 }
 
 // ============================================================================
-// Constructor جديد (بالإضافة إلى constructor الموجود ExternalBypass_Init)
+// Constructor الجديد
 // ============================================================================
 __attribute__((constructor))
 void init_hook() {
@@ -713,6 +540,7 @@ void init_hook() {
     });
 }
 
+#pragma clang diagnostic pop
 // ================================================
 // نهاية الملف
 // ================================================
