@@ -77,7 +77,7 @@ struct ProtectionToastView: View {
                     .font(.headline)
                     .fontWeight(.bold)
                     .foregroundColor(.white)
-                Text("النظام الآن مؤمن بالكامل ضد الثغرات.")
+                Text("BLACK.")
                     .font(.caption)
                     .foregroundColor(.gray)
             }
