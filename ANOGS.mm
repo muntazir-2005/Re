@@ -1,4 +1,4 @@
-// hook.mm - Optimized and Modernized Version
+// ANOGS.mm - Optimized and Fixed for iOS 18.5 SDK
 #import <stdio.h>
 #import <string.h>
 #import <unistd.h>
@@ -8,6 +8,7 @@
 #import <sys/utsname.h>
 #import <dlfcn.h>
 #import <mach/mach.h>
+#import <mach/vm_prot.h> // Added for vm_prot_t
 #import <mach-o/dyld.h>
 #import <TargetConditionals.h>
 #import <sys/param.h>
@@ -24,6 +25,11 @@
 #import <objc/runtime.h>
 #import <objc/message.h>
 #import <LocalAuthentication/LocalAuthentication.h>
+
+// Fix: Define missing macOS / Private Code Signing types for the iOS SDK compiler
+typedef CFTypeRef SecStaticCodeRef;
+typedef CFTypeRef SecRequirementRef;
+typedef uint32_t SecCSFlags;
 #endif
 
 #include "fishhook.h"
@@ -54,8 +60,10 @@ static void* (*orig_dlsym)(void *handle, const char *symbol);
 static int (*orig_task_for_pid)(mach_port_t target_tport, int pid, mach_port_t *tn);
 static int (*orig_vm_read_overwrite)(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize);
 static int (*orig_vm_write)(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt);
-static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_protect_t new_protection);
-static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_protect_t new_protection);
+
+// Fix: Changed vm_protect_t to vm_prot_t
+static int (*orig_vm_protect)(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
+static int (*orig_mach_vm_protect)(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection);
 
 // Keychain
 static OSStatus (*orig_SecItemCopyMatching)(CFDictionaryRef query, CFTypeRef *result);
@@ -102,7 +110,6 @@ static OSStatus (*orig_SecStaticCodeCheckValidity)(SecStaticCodeRef staticCode, 
 #pragma mark - Shared Utilities
 // ============================================================================
 
-// Static helper to prevent repetitive array initialization during FS operations
 static inline bool is_sensitive_path(const char *path) {
     if (!path) return false;
     static const char *sensitive[] = {
@@ -159,8 +166,10 @@ static void* my_dlsym(void *handle, const char *symbol) {
 static int my_task_for_pid(mach_port_t target_tport, int pid, mach_port_t *tn) { return KERN_FAILURE; }
 static int my_vm_read_overwrite(vm_map_t target_task, vm_address_t address, vm_size_t size, vm_address_t data, vm_size_t *outsize) { return KERN_FAILURE; }
 static int my_vm_write(vm_map_t target_task, vm_address_t address, vm_offset_t data, mach_msg_type_number_t dataCnt) { return KERN_FAILURE; }
-static int my_vm_protect(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_protect_t new_protection) { return KERN_SUCCESS; }
-static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_protect_t new_protection) { return KERN_SUCCESS; }
+
+// Fix: Changed vm_protect_t to vm_prot_t
+static int my_vm_protect(vm_map_t target_task, vm_address_t address, vm_size_t size, boolean_t set_max, vm_prot_t new_protection) { return KERN_SUCCESS; }
+static int my_mach_vm_protect(vm_map_t target_task, mach_vm_address_t address, mach_vm_size_t size, boolean_t set_max, vm_prot_t new_protection) { return KERN_SUCCESS; }
 
 // Keychain
 static OSStatus my_SecItemCopyMatching(CFDictionaryRef query, CFTypeRef *result) { return errSecItemNotFound; }
@@ -237,7 +246,6 @@ static OSStatus my_SecStaticCodeCheckValidity(SecStaticCodeRef staticCode, SecCS
 // ============================================================================
 
 static id my_UIDevice_identifierForVendor(id self, SEL _cmd) {
-    // Memory Optimization: Cache the forged UUID to mimic actual Apple API behavior.
     static NSUUID *fakeUUID = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
@@ -262,7 +270,6 @@ static void swizzle_objc_methods() {
             SEL sel = @selector(identifierForVendor);
             Method m = class_getInstanceMethod(deviceCls, sel);
             if (m) {
-                // Method replaced safely
                 method_setImplementation(m, (IMP)my_UIDevice_identifierForVendor); 
             }
         }
@@ -336,7 +343,7 @@ static void fishhook_bindings() {
 }
 
 // ============================================================================
-#pragma mark - Security Checks (Maintained for Backward Compatibility)
+#pragma mark - Security Checks
 // ============================================================================
 
 int is_simulator() {
@@ -363,7 +370,7 @@ int check_provisioning() { return 0; }
 int check_env() { return 0; }
 int check_ppid() { return 0; }
 int is_frida_loaded() { return 0; }
-void perform_security_checks() { /* Intentionally maintained empty */ }
+void perform_security_checks() { }
 
 // ============================================================================
 #pragma mark - Initialization
@@ -373,7 +380,6 @@ __attribute__((constructor))
 static void init_hook() {
     srand((unsigned int)time(NULL));
     
-    // Use modern QoS dispatch class over deprecated priority macros.
     dispatch_queue_t queue = dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0);
     
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), queue, ^{
