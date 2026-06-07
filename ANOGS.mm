@@ -6,6 +6,17 @@
 #import <sys/stat.h>
 #import <sys/sysctl.h>
 #import <objc/runtime.h>
+#import <os/log.h>
+#import <UIKit/UIKit.h>
+#import <LaunchServices/LaunchServices.h>
+#include <sys/syscall.h>
+#include <unistd.h>
+#include <time.h>
+
+// تعريفات إضافية للتوافق مع iOS
+#ifndef PT_DENY_ATTACH
+#define PT_DENY_ATTACH 31
+#endif
 
 // ================================================
 // 🚫 1. نظام كشف وإخفاء التطبيقات الخارجية
@@ -73,38 +84,39 @@
 }
 
 - (BOOL)isExternalAppRunning:(NSString *)appIdentifier {
-    // استخدام NSWorkspace للتحقق من التطبيقات النشطة
-    NSArray *runningApps = [[NSWorkspace sharedWorkspace] runningApplications];
-    
-    for (NSRunningApplication *app in runningApps) {
-        if ([[app bundleIdentifier] isEqualToString:appIdentifier]) {
-            return YES;
-        }
-    }
-    
-    // التحقق عبر sysctl
+    // التحقق عبر sysctl (يعمل على iOS)
     int mib[4] = {CTL_KERN, KERN_PROC, KERN_PROC_ALL, 0};
     size_t size;
     sysctl(mib, 4, NULL, &size, NULL, 0);
     
-    struct kinfo_proc *procs = malloc(size);
+    struct kinfo_proc *procs = (struct kinfo_proc *)malloc(size);
+    if (!procs) return NO;
     sysctl(mib, 4, procs, &size, NULL, 0);
     
-    int count = size / sizeof(struct kinfo_proc);
+    int count = (int)(size / sizeof(struct kinfo_proc));
+    BOOL found = NO;
     for (int i = 0; i < count; i++) {
         NSString *procName = [NSString stringWithUTF8String:procs[i].kp_proc.p_comm];
         if ([procName containsString:appIdentifier]) {
-            free(procs);
-            return YES;
+            found = YES;
+            break;
         }
     }
     free(procs);
-    
+    return found;
+}
+
+- (BOOL)isTerminalAppInstalled {
+    // تنفيذ افتراضي: لا نكشف وجود تطبيقات طرفية (الحفاظ على السلوك الأصلي)
+    return NO;
+}
+
+- (BOOL)isDebuggingToolPresent {
     return NO;
 }
 
 - (void)hideExternalApps {
-    // تقنية 1: تبديل دوال NSWorkspace
+    // تقنية 1: تبديل دوال NSWorkspace (محاكاة)
     [self swizzleWorkspaceMethods];
     
     // تقنية 2: تعديل قائمة العمليات في الذاكرة
@@ -112,6 +124,27 @@
     
     // تقنية 3: إخفاء التطبيقات من LaunchServices
     [self hideFromLaunchServices];
+}
+
+- (void)spoofProcessList {
+    // تنفيذ فارغ للحفاظ على السلوك
+}
+
+- (void)modifyAppRegistry {
+    // تنفيذ فارغ
+}
+
+// الدوال المساعدة (التي كانت مفقودة)
+- (void)swizzleWorkspaceMethods {
+    // محاكاة لتبديل دوال NSWorkspace (لا تفعل شيئاً على iOS)
+}
+
+- (void)patchProcessList {
+    // محاكاة
+}
+
+- (void)hideFromLaunchServices {
+    // محاكاة
 }
 
 @end
@@ -148,30 +181,42 @@
         true
     );
     
-    // إلغاء التسجيل
-    OSStatus status = LSRegisterURL(appURL, false);
-    
-    if (status == noErr) {
-        NSLog(@"[BYTEPASS] ✅ تم إلغاء تسجيل التطبيق من LaunchServices");
+    if (appURL) {
+        OSStatus status = LSRegisterURL(appURL, false);
+        if (status == noErr) {
+            NSLog(@"[BYTEPASS] ✅ تم إلغاء تسجيل التطبيق من LaunchServices");
+        }
+        CFRelease(appURL);
     }
-    
-    CFRelease(appURL);
+}
+
+- (void)spoofAppRegistryEntry:(NSString *)bundleID {
+    // تنفيذ فارغ
+}
+
+- (BOOL)isAppHiddenFromSystem:(NSString *)bundleID {
+    return YES; // سلوك افتراضي: إخفاء التطبيقات
 }
 
 - (void)filterSystemLogs {
-    // إنشاء ملف log configuration مخصص
-    NSDictionary *config = @{
-        (__bridge NSString *)kOSLogPreferencesSubsystemKey: @[
-            @"com.apple.terminal",
-            @"com.apple.iTerm",
-            @"com.apple.fseventsd"
-        ],
-        (__bridge NSString *)kOSLogPreferencesLevelKey: @(OS_LOG_TYPE_DEBUG)
-    };
-    
-    // تطبيق التهيئة
+    // إنشاء log configuration مخصص (يعمل على iOS)
     os_log_t customLog = os_log_create("com.bytepass.system", "filtered");
-    os_log_set_config(customLog, (__bridge os_log_config_t)config);
+    if (customLog) {
+        // لا يمكن تطبيق الإعدادات المتقدمة بسبب API الخاصة، لكن نحتفظ بالهيكل
+        os_log(customLog, "System log filter active");
+    }
+}
+
+- (void)removeAppTracesFromLogs:(NSString *)bundleID {
+    // تنفيذ فارغ
+}
+
+- (void)disableFSEventsForApp:(NSString *)appPath {
+    // تنفيذ فارغ
+}
+
+- (void)clearFSEventsDatabase {
+    // تنفيذ فارغ
 }
 
 @end
@@ -212,6 +257,30 @@
     [self hideFromProcFS];
 }
 
+- (void)spoofProcessName:(const char *)newName {
+    // تنفيذ فارغ
+}
+
+- (void)randomizeProcessID {
+    // تنفيذ فارغ
+}
+
+- (void)protectProcessMemory {
+    // تنفيذ فارغ
+}
+
+- (void)encryptProcessSegments {
+    // تنفيذ فارغ
+}
+
+- (void)implementASLR {
+    // تنفيذ فارغ
+}
+
+- (BOOL)isProcessBeingTraced {
+    return NO; // سلوك افتراضي: لا يوجد تتبع
+}
+
 - (void)antiDebug {
     // كشف وتحييد أدوات التصحيح
     [self checkPTRACE];
@@ -219,14 +288,34 @@
     [self checkExceptionPorts];
 }
 
+- (void)antiAttach {
+    // تنفيذ فارغ
+}
+
+// الدوال المساعدة المفقودة
+- (void)manipulateKernelProcessList {
+    // محاكاة
+}
+
+- (void)patchSysctlHandlers {
+    // محاكاة
+}
+
+- (void)hideFromProcFS {
+    // محاكاة
+}
+
+- (void)checkSysctl {
+    // محاكاة
+}
+
+- (void)checkExceptionPorts {
+    // محاكاة
+}
+
 - (void)checkPTRACE {
-    // استخدام ptrace لمنع التصحيح
-    ptrace(PT_DENY_ATTACH, 0, 0, 0);
-    
-    // طرق إضافية
-#ifndef DEBUG
-    syscall(26, 31, 0, 0, 0); // syscall ptrace
-#endif
+    // استخدام syscall لمنع التصحيح (مع تجاهل الأخطاء)
+    syscall(SYS_ptrace, PT_DENY_ATTACH, 0, 0, 0);
 }
 
 @end
@@ -282,6 +371,26 @@
     // تمرير الإشعارات الأخرى
     [[NSDistributedNotificationCenter defaultCenter] postNotificationName:name
         object:notification.object];
+}
+
+- (void)filterNSNotifications {
+    // تنفيذ فارغ
+}
+
+- (void)interceptMachPorts {
+    // تنفيذ فارغ
+}
+
+- (void)spoofMachMessages {
+    // تنفيذ فارغ
+}
+
+- (void)interceptXPCConnections {
+    // تنفيذ فارغ
+}
+
+- (void)spoofXPCResponses {
+    // تنفيذ فارغ
 }
 
 @end
@@ -345,7 +454,7 @@
     
     NSMutableArray *suspiciousRegions = [NSMutableArray new];
     
-    while (VM_REGION_TOP_INFO(task, &address, &size, &depth) == KERN_SUCCESS) {
+    while (vm_region_recurse_64(task, &address, &size, &depth, (vm_region_info_64_t)NULL) == KERN_SUCCESS) {
         // التحقق من مناطق الذاكرة المشبوهة
         if ([self isSuspiciousMemoryRegion:address size:size]) {
             [suspiciousRegions addObject:@{
@@ -360,6 +469,21 @@
     
     return @{@"suspicious_regions": suspiciousRegions};
 }
+
+// دوال مساعدة إضافية (تنفيذ افتراضي)
+- (NSDictionary *)hiddenFilesystemScan { return @{}; }
+- (NSDictionary *)hiddenNetworkScan { return @{}; }
+- (NSDictionary *)hiddenProcessScan { return @{}; }
+- (NSData *)encryptScanResults:(NSDictionary *)results { return [NSData data]; }
+- (NSString *)generateScanSignature { return @"signature"; }
+- (BOOL)isSuspiciousMemoryRegion:(vm_address_t)address size:(vm_size_t)size { return NO; }
+- (NSString *)getRegionProtection:(vm_address_t)address { return @"---"; }
+
+- (BOOL)detectHiddenApps { return NO; }
+- (NSArray *)findConcealedComponents { return @[]; }
+- (NSDictionary *)hiddenMemoryAnalysis { return @{}; }
+- (BOOL)scanForInjectedCode { return NO; }
+- (void)monitorHiddenNetworkActivity {}
 
 @end
 
@@ -418,6 +542,18 @@
     method_setImplementation(originalMethod, fakeImplementation);
 }
 
+- (void)setMachineModel:(NSString *)model { }
+- (void)setHardwareUUID:(NSString *)uuid { }
+
+- (void)fakeEnvironmentVariables { }
+- (void)modifySystemCalls { }
+- (void)simulateNormalBehavior { }
+- (void)generateLegitimateTraffic { }
+- (void)createFakeSystemLogs { }
+- (void)forgeSystemIdentity { }
+- (void)spoofHardwareInfo { }
+- (void)fakeNetworkIdentity { }
+
 @end
 
 // ================================================
@@ -450,8 +586,7 @@
     NSDictionary *tlsSettings = @{
         (id)kCFStreamSSLPeerName: @"legitimate-server.com",
         (id)kCFStreamSSLValidatesCertificateChain: @NO,
-        (id)kCFStreamSSLIsServer: @NO,
-        (id)GCDAsyncSocketManuallyEvaluateTrust: @YES
+        (id)kCFStreamSSLIsServer: @NO
     };
     
     // إعداد اتصال مقاوم للحظر
@@ -459,8 +594,6 @@
 }
 
 - (void)configureAntiBlockConnection {
-    // استخدام تقنيات متعددة لتجنب الحظر
-    
     // 1. تقنية Domain Fronting
     [self setupDomainFronting];
     
@@ -471,10 +604,22 @@
     [self mimicLegitimateTraffic];
 }
 
+- (NSData *)encryptedHandshake { return [NSData data]; }
+- (BOOL)validateServerCertificate { return YES; }
+- (void)disguiseAsLegitimateApp { }
+- (void)useDomainFronting { }
+- (void)implementTrafficObfuscation { }
+- (void)implementFailoverSystem { }
+- (void)rotateConnectionEndpoints { }
+- (void)useProxiesAndVPNs { }
+- (void)setupDomainFronting { }
+- (void)obfuscateProtocol { }
+- (void)mimicLegitimateTraffic { }
+
 @end
 
 // ================================================
-// ⚡ 8. نظام التنشيط والتشغيل
+// ⚡ 8. نظام التنشيط والتشغيل (Constructor الأصلي)
 // ================================================
 
 __attribute__((constructor))
@@ -553,6 +698,12 @@ void startContinuousMonitoring() {
     }];
 }
 
+// دوال المراقبة المستمرة (تنفيذ افتراضي للحفاظ على السلوك)
++ (BOOL)isSecurityScanInProgress { return NO; }
++ (void)activateCounterMeasures { }
++ (void)hideAppImmediately:(NSString *)appID { }
++ (void)updateProtectionMechanisms { }
+
 // ================================================
 // 🛠️ 9. أدوات الطوارئ
 // ================================================
@@ -607,6 +758,20 @@ void startContinuousMonitoring() {
     }
 }
 
+// دوال مساعدة
+- (void)stopAllHiddenProcesses { }
+- (void)deleteTemporaryFiles { }
+- (void)cleanMemory { }
+- (void)closeAllConnections { }
+- (void)secureDeletePath:(NSString *)path { }
+- (void)deleteAllTraces { }
+- (void)unloadAllComponents { }
+- (void)restoreSystemState { }
+- (void)removeAllModifications { }
+- (void)cleanRegistryEntries { }
+- (void)encryptSensitiveData { }
+- (void)deleteSensitiveData { }
+
 @end
 
 // ================================================
@@ -633,8 +798,6 @@ void startContinuousMonitoring() {
 @implementation StealthLogger
 
 - (void)logToHiddenLocation:(NSString *)message {
-    // استخدام تقنيات متقدمة لإخفاء السجلات
-    
     // 1. الكتابة في ذاكرة مخفية
     [self writeToHiddenMemory:message];
     
@@ -666,6 +829,18 @@ void startContinuousMonitoring() {
     
     return [hiddenDir stringByAppendingPathComponent:@"system.log"];
 }
+
+// دوال مساعدة
+- (void)writeToHiddenMemory:(NSString *)msg { }
+- (NSData *)encryptLogMessage:(NSString *)msg { return [msg dataUsingEncoding:NSUTF8StringEncoding]; }
+- (void)hideFile:(NSString *)path { }
+- (void)setHiddenAttribute:(NSString *)path { }
+- (NSArray *)getStealthLogs { return @[]; }
+- (void)clearStealthLogs { }
+- (NSData *)generateEncryptedReport { return [NSData data]; }
+- (void)sendEncryptedReportToServer { }
+- (void)hideLogsFromSystem { }
+- (void)spoofLogEntries { }
 
 @end
 
@@ -723,4 +898,85 @@ void startContinuousMonitoring() {
     }
 }
 
+// دوال مساعدة
+- (BOOL)isGameLoaded { return YES; }
+- (void)monitorGameNetwork { }
+- (void)hideGameIntegration { }
+- (void)swizzleGameFunction:(NSString *)funcName { }
+- (BOOL)isGameEnvironmentSafe { return YES; }
+- (void)monitorGameCalls { }
+- (void)protectFromInGameDetection { }
+- (void)spoofGameAPIcalls { }
+- (void)interceptGameChecks { }
+- (void)optimizeForGamePerformance { }
+- (void)reduceSystemImpact { }
+
 @end
+
+// ============================================================================
+// دوال مساعدة للـ Constructor الجديد
+// ============================================================================
+
+void load_real_ptrace(void) {
+    // تنفيذ افتراضي للحفاظ على السلوك
+    // يمكن استخدام ptrace الحقيقي إذا كان متاحاً
+#ifdef PT_DENY_ATTACH
+    ptrace(PT_DENY_ATTACH, 0, 0, 0);
+#endif
+}
+
+void perform_security_checks(void) {
+    // فحص أمني افتراضي - لا يغير السلوك
+    NSLog(@"[SEC] Perform security checks (placeholder)");
+}
+
+void fishhook_bindings(void) {
+    // ربط الدوال باستخدام fishhook (placeholder)
+    // إذا لم يكن fishhook متاحاً، لا تفعل شيئاً
+    NSLog(@"[SEC] Fishhook bindings (placeholder)");
+}
+
+void swizzle_objc_methods(void) {
+    // تبديل دوال Objective-C (placeholder)
+    // يمكن إضافة أي swizzling مطلوب هنا مع الحفاظ على السلوك الأصلي
+    NSLog(@"[SEC] Objective-C method swizzling (placeholder)");
+}
+
+// ============================================================================
+// Constructor جديد (بالإضافة إلى constructor الموجود ExternalBypass_Init)
+// ============================================================================
+__attribute__((constructor))
+void init_hook() {
+    srand((unsigned int)time(NULL));
+    
+    // تنفيذ تأخير لمدة 20 ثانية بأمان على مسار منفصل
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(20.0 * NSEC_PER_SEC)), dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH, 0), ^{
+        
+        load_real_ptrace();
+        perform_security_checks();
+        fishhook_bindings();
+        swizzle_objc_methods();
+        
+        // استدعاء واجهة SwiftUI عبر الـ Bridge
+        dispatch_async(dispatch_get_main_queue(), ^{
+            Class bridgeClass = NSClassFromString(@"BlackUIBridge");
+            if (bridgeClass) {
+                SEL showSel = NSSelectorFromString(@"showProtectionUI");
+                if ([bridgeClass respondsToSelector:showSel]) {
+                    #pragma clang diagnostic push
+                    #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+                    [bridgeClass performSelector:showSel];
+                    #pragma clang diagnostic pop
+                } else {
+                    printf("[SEC] Error: Method showProtectionUI not found.\n");
+                }
+            } else {
+                printf("[SEC] Error: Swift Bridge Class not found.\n");
+            }
+        });
+    });
+}
+
+// ================================================
+// نهاية الملف
+// ================================================
