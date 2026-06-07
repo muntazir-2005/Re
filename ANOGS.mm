@@ -1,4 +1,5 @@
 // =============== نظام تعطيل فحص التطبيقات الخارجية والطرفية ===============
+// ANOGS.mm
 
 #import <Foundation/Foundation.h>
 #import <dlfcn.h>
@@ -9,7 +10,7 @@
 #import <os/log.h>
 #import <UIKit/UIKit.h>
 #import <CoreServices/CoreServices.h>
-#import <mach/mach.h>                // إضافة لـ mach_task_self, vm_region_recurse_64
+#import <mach/mach.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 #include <time.h>
@@ -18,7 +19,6 @@
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wdeprecated-declarations"
 
-// تعريفات إضافية
 #ifndef PT_DENY_ATTACH
 #define PT_DENY_ATTACH 31
 #endif
@@ -165,7 +165,7 @@
 @end
 
 // ================================================
-// 📡 4. نظام اعتراض الاتصالات (محاكاة لأن NSDistributedNotificationCenter غير متوفر على iOS)
+// 📡 4. نظام اعتراض الاتصالات (محاكاة لأن NSDistributedNotificationCenter غير متوفر)
 // ================================================
 @interface CommunicationInterceptor : NSObject
 - (void)interceptDistributedNotifications;
@@ -177,9 +177,7 @@
 @end
 
 @implementation CommunicationInterceptor
-- (void)interceptDistributedNotifications {
-    // غير متوفر على iOS - نتركه فارغاً
-}
+- (void)interceptDistributedNotifications { }
 - (void)filterNSNotifications { }
 - (void)interceptMachPorts { }
 - (void)spoofMachMessages { }
@@ -214,8 +212,11 @@
     vm_address_t address = 0;
     vm_size_t size = 0;
     natural_t depth = 0;
+    vm_region_info_64_t info = NULL;
+    mach_msg_type_number_t infoCnt = 0;
     NSMutableArray *suspiciousRegions = [NSMutableArray new];
-    while (vm_region_recurse_64(task, &address, &size, &depth, (vm_region_info_64_t)NULL) == KERN_SUCCESS) {
+    
+    while (vm_region_recurse_64(task, &address, &size, &depth, info, &infoCnt) == KERN_SUCCESS) {
         if ([self isSuspiciousMemoryRegion:address size:size]) {
             [suspiciousRegions addObject:@{@"address": @(address), @"size": @(size), @"protection": [self getRegionProtection:address]}];
         }
