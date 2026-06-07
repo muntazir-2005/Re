@@ -6,6 +6,8 @@
 #import <string.h>
 #import <unistd.h>
 #import <stdlib.h>
+#import <dirent.h>         // FIX: Added for DIR and struct dirent
+#import <sys/time.h>       // FIX: Added for struct timeval and gettimeofday
 #import <sys/stat.h>
 #import <sys/sysctl.h>
 #import <sys/utsname.h>
